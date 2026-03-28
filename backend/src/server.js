@@ -7,6 +7,8 @@ const { SessionBillingManager } = require('./jobs/sessionBillingManager');
 const { initSocket } = require('./socket');
 
 const startServer = async () => {
+  const PORT = process.env.PORT || env.PORT || 3000;
+
   try {
     await connectRedis();
   } catch (error) {
@@ -25,8 +27,8 @@ const startServer = async () => {
 
   billingManager.io = io;
 
-  httpServer.listen(env.PORT, () => {
-    logger.info(`Clarivoice backend running on port ${env.PORT}`);
+  httpServer.listen(PORT, () => {
+    logger.info(`Clarivoice backend running on port ${PORT}`);
   });
 
   const shutdown = () => {

@@ -33,7 +33,10 @@ app.use(globalRateLimiter);
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 app.get('/health', (_req, res) => {
-  res.status(200).send('Server is running 🚀');
+  res.status(200).json({
+    success: true,
+    message: 'Server is running',
+  });
 });
 
 app.use(env.API_PREFIX, routes);
