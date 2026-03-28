@@ -13,6 +13,15 @@ const routes = require('./routes');
 const agoraRoutes = require('./routes/agoraRoutes');
 
 const app = express();
+
+// Keep health check lightweight and available before heavier middleware chains.
+app.get('/health', (_req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Server is running',
+  });
+});
+
 const originList = env.CLIENT_ORIGIN.split(',').map((origin) => origin.trim());
 const allowAllOrigins = originList.includes('*');
 
@@ -31,13 +40,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use(sanitizeInputMiddleware);
 app.use(globalRateLimiter);
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
-
-app.get('/health', (_req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Server is running',
-  });
-});
 
 app.use(env.API_PREFIX, routes);
 app.use('/api/agora', agoraRoutes);
