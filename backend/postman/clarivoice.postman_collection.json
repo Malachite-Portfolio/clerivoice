@@ -1,0 +1,140 @@
+{
+  "info": {
+    "name": "Clarivoice Backend API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Sample API collection for Clarivoice production-style backend"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080/api/v1" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "chatSessionId", "value": "" },
+    { "key": "callSessionId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth - Send OTP",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/auth/send-otp",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone\": \"+910000000201\",\n  \"purpose\": \"LOGIN\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Auth - Verify OTP",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/auth/verify-otp",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone\": \"+910000000201\",\n  \"otp\": \"123456\",\n  \"displayName\": \"Anonymous\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Wallet - Summary",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": "{{baseUrl}}/wallet/summary"
+      }
+    },
+    {
+      "name": "Wallet - Create Order",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": "{{baseUrl}}/wallet/create-order",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"planId\": 1,\n  \"couponCode\": \"FLAT200\",\n  \"paymentMethod\": \"upi\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Referral - Dashboard",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": "{{baseUrl}}/referral/me"
+      }
+    },
+    {
+      "name": "Chat - Request",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": "{{baseUrl}}/chat/request",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"listenerId\": \"<LISTENER_USER_ID>\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Call - Request",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": "{{baseUrl}}/call/request",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"listenerId\": \"<LISTENER_USER_ID>\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Usage - Summary",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": "{{baseUrl}}/usage/summary"
+      }
+    },
+    {
+      "name": "App - Sidebar",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": "{{baseUrl}}/app/sidebar"
+      }
+    },
+    {
+      "name": "Admin - Wallet Adjustment",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": "{{baseUrl}}/admin/wallet/adjust",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"userId\": \"<USER_ID>\",\n  \"action\": \"CREDIT\",\n  \"amount\": 100,\n  \"reason\": \"Manual adjustment\"\n}"
+        }
+      }
+    }
+  ]
+}
