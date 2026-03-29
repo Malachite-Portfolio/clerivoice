@@ -11,7 +11,7 @@ const jwtSecretFromEnv = process.env.JWT_SECRET || '';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().default(3000),
+  PORT: z.coerce.number().optional(),
   API_PREFIX: z.string().default('/api/v1'),
   CLIENT_ORIGIN: z.string().default('http://localhost:3000,http://localhost:19006'),
 

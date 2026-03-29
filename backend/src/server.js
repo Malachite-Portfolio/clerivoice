@@ -1,4 +1,3 @@
-const http = require('http');
 const { app } = require('./app');
 const { env } = require('./config/env');
 const { logger } = require('./config/logger');
@@ -37,10 +36,14 @@ const startRedisWarmup = async () => {
 };
 
 const startServer = async () => {
-  const PORT = Number(process.env.PORT || env.PORT || 3000);
-  const HOST = process.env.HOST || '0.0.0.0';
+  const PORT = process.env.PORT;
+  const HOST = '0.0.0.0';
 
-  const httpServer = http.createServer(app);
+  if (!PORT) {
+    throw new Error('PORT is required (Railway)');
+  }
+
+  const httpServer = require('http').createServer(app);
   logger.info('HTTP server wired to express app instance', {
     appInstanceId: app.locals.instanceId,
   });
@@ -63,8 +66,8 @@ const startServer = async () => {
     process.exit(1);
   });
 
-  httpServer.listen(PORT, HOST, () => {
-    logger.info(`Server running on port ${PORT} (host ${HOST})`);
+  httpServer.listen(PORT, () => {
+    console.log(`✅ SERVER LISTENING ON PORT ${PORT}`);
   });
 
   // Do not block HTTP readiness on Redis connectivity.
