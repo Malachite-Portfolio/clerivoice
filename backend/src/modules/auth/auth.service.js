@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const dayjs = require('dayjs');
 const { prisma } = require('../../config/prisma');
 const { env } = require('../../config/env');
+const { logger } = require('../../config/logger');
 const { AppError } = require('../../utils/appError');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../../utils/tokens');
 const { buildReferralCode } = require('../../utils/referralCode');
@@ -29,6 +30,16 @@ const sanitizePhone = (phone) => phone.replace(/\s+/g, '');
 const isDemoPhone = (phone) =>
   sanitizePhone(phone) === sanitizePhone(env.DEMO_LOGIN_PHONE);
 const isDemoOtp = (otp) => String(otp) === String(env.DEMO_LOGIN_OTP);
+const maskIdentity = (value) => {
+  const input = String(value || '').trim();
+  if (!input) return '';
+  if (input.includes('@')) {
+    const [name, domain] = input.split('@');
+    return `${name.slice(0, 2)}***@${domain || ''}`;
+  }
+  if (input.length <= 4) return '****';
+  return `${input.slice(0, 2)}***${input.slice(-2)}`;
+};
 
 const buildDemoAuthResponse = ({ phone }) => {
   const normalizedPhone = sanitizePhone(phone);
@@ -312,11 +323,35 @@ const verifyOtp = async ({
 const loginWithPassword = async ({ phoneOrEmail, password, deviceId, deviceInfo, ipAddress, userAgent }) => {
   const normalizedIdentity = String(phoneOrEmail || '').trim();
   const normalizedEmail = normalizedIdentity.toLowerCase();
+  const maskedIdentity = maskIdentity(normalizedIdentity);
 
-  const user = await prisma.user.findFirst({
-    where: {
-      OR: [{ phone: sanitizePhone(normalizedIdentity) }, { email: normalizedEmail }],
-    },
+  logger.info('[Auth] loginWithPassword started', {
+    identity: maskedIdentity,
+    hasPassword: Boolean(password),
+  });
+
+  let user;
+  try {
+    user = await prisma.user.findFirst({
+      where: {
+        OR: [{ phone: sanitizePhone(normalizedIdentity) }, { email: normalizedEmail }],
+      },
+    });
+  } catch (error) {
+    logger.error('[Auth] user lookup failed', {
+      identity: maskedIdentity,
+      message: error?.message,
+    });
+    throw new AppError('Unable to process login at the moment', 500, 'AUTH_LOOKUP_FAILED');
+  }
+
+  logger.info('[Auth] user lookup result', {
+    identity: maskedIdentity,
+    found: Boolean(user),
+    userId: user?.id,
+    role: user?.role,
+    status: user?.status,
+    hasPasswordHash: Boolean(user?.passwordHash),
   });
 
   if (!user || !user.passwordHash) {
@@ -327,18 +362,42 @@ const loginWithPassword = async ({ phoneOrEmail, password, deviceId, deviceInfo,
     throw new AppError('Account is unavailable', 403, 'ACCOUNT_UNAVAILABLE');
   }
 
-  const isMatch = await bcrypt.compare(password, user.passwordHash);
+  let isMatch = false;
+  try {
+    isMatch = await bcrypt.compare(String(password || ''), user.passwordHash);
+  } catch (error) {
+    logger.error('[Auth] password compare failed', {
+      userId: user.id,
+      message: error?.message,
+    });
+    throw new AppError('Unable to process login at the moment', 500, 'PASSWORD_COMPARE_FAILED');
+  }
+
+  logger.info('[Auth] password compare result', {
+    userId: user.id,
+    matched: isMatch,
+  });
+
   if (!isMatch) {
     throw new AppError('Invalid credentials', 401, 'INVALID_CREDENTIALS');
   }
 
-  const tokens = await issueTokensForSession({
-    user,
-    deviceId,
-    deviceInfo,
-    ipAddress,
-    userAgent,
-  });
+  let tokens;
+  try {
+    tokens = await issueTokensForSession({
+      user,
+      deviceId,
+      deviceInfo,
+      ipAddress,
+      userAgent,
+    });
+  } catch (error) {
+    logger.error('[Auth] session token issue failed', {
+      userId: user.id,
+      message: error?.message,
+    });
+    throw new AppError('Unable to process login at the moment', 500, 'SESSION_ISSUE_FAILED');
+  }
 
   return {
     user: {

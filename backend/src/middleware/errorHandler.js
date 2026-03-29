@@ -3,9 +3,19 @@ const { logger } = require('../config/logger');
 const { errorResponse } = require('../utils/apiResponse');
 
 const errorHandler = (error, req, res, _next) => {
-  const statusCode = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
-  const code = error.code || 'INTERNAL_SERVER_ERROR';
-  const message = error.message || 'Something went wrong';
+  const parseError =
+    error?.type === 'entity.parse.failed' || error instanceof SyntaxError;
+  const statusCode =
+    error.statusCode ||
+    error.status ||
+    (parseError ? StatusCodes.BAD_REQUEST : StatusCodes.INTERNAL_SERVER_ERROR);
+  const code =
+    error.code ||
+    (statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : 'BAD_REQUEST');
+  const message =
+    parseError && !error?.message
+      ? 'Invalid JSON payload'
+      : error.message || 'Something went wrong';
   const data = error.data || null;
   const requestMeta = {
     method: req?.method,

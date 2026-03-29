@@ -3,6 +3,7 @@ const { asyncHandler } = require('../../utils/asyncHandler');
 const { successResponse } = require('../../utils/apiResponse');
 const { verifyAccessToken } = require('../../utils/tokens');
 const { AppError } = require('../../utils/appError');
+const { logger } = require('../../config/logger');
 const authService = require('../auth/auth.service');
 
 const assertAdminRole = (role) => {
@@ -12,14 +13,34 @@ const assertAdminRole = (role) => {
 };
 
 const login = asyncHandler(async (req, res) => {
-  const data = await authService.loginWithPassword({
-    ...req.body,
+  const incomingKeys = Object.keys(req.body || {});
+  logger.info('[AdminAuth] login request received', {
+    keys: incomingKeys,
     ipAddress: req.ip,
-    userAgent: req.get('user-agent'),
   });
 
-  assertAdminRole(data.user?.role);
-  return successResponse(res, data, 'Admin login successful');
+  try {
+    const data = await authService.loginWithPassword({
+      ...req.body,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    });
+
+    assertAdminRole(data.user?.role);
+    logger.info('[AdminAuth] login success', {
+      userId: data.user?.id,
+      role: data.user?.role,
+      status: data.user?.status,
+    });
+    return successResponse(res, data, 'Admin login successful');
+  } catch (error) {
+    logger.warn('[AdminAuth] login failed', {
+      code: error?.code || 'UNKNOWN',
+      statusCode: error?.statusCode || error?.status || 500,
+      message: error?.message || 'Login failed',
+    });
+    throw error;
+  }
 });
 
 const refresh = asyncHandler(async (req, res) => {
