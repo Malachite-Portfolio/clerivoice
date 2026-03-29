@@ -13,7 +13,11 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().optional(),
   API_PREFIX: z.string().default('/api/v1'),
-  CLIENT_ORIGIN: z.string().default('http://localhost:3000,http://localhost:19006'),
+  CLIENT_ORIGIN: z
+    .string()
+    .default(
+      'https://admin-panel-4bh7uld06-malachite-portfolios-projects.vercel.app,http://localhost:3000,http://localhost:5173'
+    ),
 
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),

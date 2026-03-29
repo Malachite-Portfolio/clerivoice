@@ -16,6 +16,37 @@ const app = express();
 const APP_INSTANCE_ID = `clarivoice-app-${process.pid}`;
 app.locals.instanceId = APP_INSTANCE_ID;
 
+const defaultAllowedOrigins = [
+  'https://admin-panel-4bh7uld06-malachite-portfolios-projects.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5173',
+];
+
+const configuredOrigins = env.CLIENT_ORIGIN.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...configuredOrigins])];
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow non-browser clients (no Origin header) such as health checks/cURL.
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  optionsSuccessStatus: 204,
+};
+
 app.use((req, _res, next) => {
   console.log(`[REQ][${APP_INSTANCE_ID}] ${req.method} ${req.originalUrl}`);
   next();
@@ -30,15 +61,9 @@ app.get('/health', (_req, res) => {
   });
 });
 
-const originList = env.CLIENT_ORIGIN.split(',').map((origin) => origin.trim());
-const allowAllOrigins = originList.includes('*');
-
-app.use(
-  cors({
-    origin: allowAllOrigins ? '*' : originList,
-    credentials: !allowAllOrigins,
-  })
-);
+console.log('[CORS] Allowed origins:', allowedOrigins);
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.use(helmet());
 app.use(compression());
