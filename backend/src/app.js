@@ -13,9 +13,17 @@ const routes = require('./routes');
 const agoraRoutes = require('./routes/agoraRoutes');
 
 const app = express();
+const APP_INSTANCE_ID = `clarivoice-app-${process.pid}`;
+app.locals.instanceId = APP_INSTANCE_ID;
+
+app.use((req, _res, next) => {
+  console.log(`[REQ][${APP_INSTANCE_ID}] ${req.method} ${req.originalUrl}`);
+  next();
+});
 
 // Keep health check lightweight and available before heavier middleware chains.
 app.get('/health', (_req, res) => {
+  console.log('Health route hit');
   res.status(200).json({
     success: true,
     message: 'Server is running',

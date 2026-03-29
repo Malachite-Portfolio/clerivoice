@@ -6,6 +6,20 @@ const { connectRedis } = require('./config/redis');
 const { SessionBillingManager } = require('./jobs/sessionBillingManager');
 const { initSocket } = require('./socket');
 
+process.on('uncaughtException', (error) => {
+  logger.error('uncaughtException', {
+    message: error?.message,
+    stack: error?.stack,
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('unhandledRejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
 const startRedisWarmup = async () => {
   try {
     await Promise.race([
@@ -27,6 +41,10 @@ const startServer = async () => {
   const HOST = process.env.HOST || '0.0.0.0';
 
   const httpServer = http.createServer(app);
+  logger.info('HTTP server wired to express app instance', {
+    appInstanceId: app.locals.instanceId,
+  });
+
   const billingManager = new SessionBillingManager(null);
   const io = initSocket({
     httpServer,
@@ -37,7 +55,11 @@ const startServer = async () => {
   billingManager.io = io;
 
   httpServer.on('error', (error) => {
-    logger.error('HTTP server failed to start', { error: error.message, code: error.code });
+    logger.error('HTTP server failed to start', {
+      error: error.message,
+      code: error.code,
+      appInstanceId: app.locals.instanceId,
+    });
     process.exit(1);
   });
 
