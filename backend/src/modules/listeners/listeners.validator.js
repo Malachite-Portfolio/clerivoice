@@ -8,6 +8,11 @@ const listListenersQuerySchema = z.object({
   language: z.string().optional(),
 });
 
+const updateAvailabilitySchema = z.object({
+  availability: z.enum(['ONLINE', 'OFFLINE', 'BUSY']),
+});
+
 module.exports = {
   listListenersQuerySchema,
+  updateAvailabilitySchema,
 };

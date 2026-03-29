@@ -320,6 +320,10 @@ const verifyOtp = async ({
   };
 };
 
+const loginUserWithOtp = async (payload) => {
+  return verifyOtp(payload);
+};
+
 const loginWithPassword = async ({ phoneOrEmail, password, deviceId, deviceInfo, ipAddress, userAgent }) => {
   const normalizedIdentity = String(phoneOrEmail || '').trim();
   const normalizedEmail = normalizedIdentity.toLowerCase();
@@ -406,6 +410,146 @@ const loginWithPassword = async ({ phoneOrEmail, password, deviceId, deviceInfo,
       displayName: user.displayName,
       role: user.role,
       status: user.status,
+    },
+    ...tokens,
+  };
+};
+
+const loginListenerWithPassword = async ({
+  listenerIdentity,
+  listenerId,
+  phoneOrEmail,
+  phone,
+  email,
+  password,
+  deviceId,
+  deviceInfo,
+  ipAddress,
+  userAgent,
+}) => {
+  const rawIdentity = String(
+    listenerIdentity || listenerId || phoneOrEmail || phone || email || ''
+  ).trim();
+  const normalizedEmail = rawIdentity.toLowerCase();
+  const maskedIdentity = maskIdentity(rawIdentity);
+
+  logger.info('[Auth] loginListenerWithPassword started', {
+    identity: maskedIdentity,
+    hasPassword: Boolean(password),
+  });
+
+  if (!rawIdentity) {
+    throw new AppError(
+      'Listener ID, phone, or email is required',
+      400,
+      'LISTENER_IDENTITY_REQUIRED'
+    );
+  }
+
+  let listenerUser;
+  try {
+    listenerUser = await prisma.user.findFirst({
+      where: {
+        role: 'LISTENER',
+        OR: [{ id: rawIdentity }, { phone: sanitizePhone(rawIdentity) }, { email: normalizedEmail }],
+      },
+      include: {
+        listenerProfile: true,
+      },
+    });
+  } catch (error) {
+    logger.error('[Auth] listener lookup failed', {
+      identity: maskedIdentity,
+      message: error?.message,
+    });
+    throw new AppError(
+      'Unable to process listener login at the moment',
+      500,
+      'LISTENER_LOOKUP_FAILED'
+    );
+  }
+
+  logger.info('[Auth] listener lookup result', {
+    identity: maskedIdentity,
+    found: Boolean(listenerUser),
+    userId: listenerUser?.id,
+    role: listenerUser?.role,
+    status: listenerUser?.status,
+    hasListenerProfile: Boolean(listenerUser?.listenerProfile),
+    hasPasswordHash: Boolean(listenerUser?.passwordHash),
+  });
+
+  if (!listenerUser || !listenerUser.passwordHash) {
+    throw new AppError('Invalid listener credentials', 401, 'INVALID_LISTENER_CREDENTIALS');
+  }
+
+  if (listenerUser.status === 'BLOCKED' || listenerUser.status === 'DELETED' || listenerUser.deletedAt) {
+    throw new AppError('Listener account is unavailable', 403, 'LISTENER_UNAVAILABLE');
+  }
+
+  if (!listenerUser.listenerProfile || !listenerUser.listenerProfile.isEnabled) {
+    throw new AppError('Listener profile is unavailable', 403, 'LISTENER_PROFILE_UNAVAILABLE');
+  }
+
+  let isMatch = false;
+  try {
+    isMatch = await bcrypt.compare(String(password || ''), listenerUser.passwordHash);
+  } catch (error) {
+    logger.error('[Auth] listener password compare failed', {
+      userId: listenerUser.id,
+      message: error?.message,
+    });
+    throw new AppError(
+      'Unable to process listener login at the moment',
+      500,
+      'LISTENER_PASSWORD_COMPARE_FAILED'
+    );
+  }
+
+  logger.info('[Auth] listener password compare result', {
+    userId: listenerUser.id,
+    matched: isMatch,
+  });
+
+  if (!isMatch) {
+    throw new AppError('Invalid listener credentials', 401, 'INVALID_LISTENER_CREDENTIALS');
+  }
+
+  let tokens;
+  try {
+    tokens = await issueTokensForSession({
+      user: listenerUser,
+      deviceId,
+      deviceInfo,
+      ipAddress,
+      userAgent,
+    });
+  } catch (error) {
+    logger.error('[Auth] listener session issue failed', {
+      userId: listenerUser.id,
+      message: error?.message,
+    });
+    throw new AppError(
+      'Unable to process listener login at the moment',
+      500,
+      'LISTENER_SESSION_ISSUE_FAILED'
+    );
+  }
+
+  return {
+    user: {
+      id: listenerUser.id,
+      phone: listenerUser.phone,
+      email: listenerUser.email,
+      displayName: listenerUser.displayName,
+      role: listenerUser.role,
+      status: listenerUser.status,
+      listenerProfile: {
+        availability: listenerUser.listenerProfile.availability,
+        callRatePerMinute: listenerUser.listenerProfile.callRatePerMinute,
+        chatRatePerMinute: listenerUser.listenerProfile.chatRatePerMinute,
+        isEnabled: listenerUser.listenerProfile.isEnabled,
+      },
     },
     ...tokens,
   };
@@ -507,7 +651,9 @@ const logout = async ({ refreshToken, userId }) => {
 module.exports = {
   sendOtp,
   verifyOtp,
+  loginUserWithOtp,
   loginWithPassword,
+  loginListenerWithPassword,
   refreshAccessToken,
   logout,
 };

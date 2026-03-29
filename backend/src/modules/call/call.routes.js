@@ -6,6 +6,7 @@ const controller = require('./call.controller');
 const {
   callRequestSchema,
   callActionSchema,
+  callBodyActionSchema,
   callEndSchema,
   callTokenRefreshSchema,
 } = require('./call.validator');
@@ -13,6 +14,20 @@ const {
 const router = express.Router();
 
 router.post('/request', authMiddleware, validate(callRequestSchema), controller.requestCall);
+router.post(
+  '/accept',
+  authMiddleware,
+  allowRoles('LISTENER', 'ADMIN'),
+  validate(callBodyActionSchema),
+  controller.acceptCallDirect
+);
+router.post(
+  '/reject',
+  authMiddleware,
+  allowRoles('LISTENER', 'ADMIN'),
+  validate(callBodyActionSchema),
+  controller.rejectCallDirect
+);
 router.post(
   '/:sessionId/accept',
   authMiddleware,

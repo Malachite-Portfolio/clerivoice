@@ -61,6 +61,12 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
           data: { availability: 'ONLINE' },
         })
         .catch((error) => logger.warn('Failed to mark listener online', error.message));
+
+      io.emit('listener_online', {
+        listenerId: userId,
+        status: 'ONLINE',
+        syncVersion: Date.now(),
+      });
     }
 
     io.emit('user_online', { userId, role });
@@ -87,6 +93,7 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
 
       io.emit('listener_status_changed', payload);
       io.emit('host_status_changed', payload);
+      io.emit('listener_online', payload);
     });
 
     socket.on('listener_offline', async () => {
@@ -111,6 +118,7 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
 
       io.emit('listener_status_changed', payload);
       io.emit('host_status_changed', payload);
+      io.emit('listener_offline', payload);
     });
 
     socket.on('listener_busy', async () => {
@@ -324,6 +332,7 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
 
         io.emit('listener_status_changed', payload);
         io.emit('host_status_changed', payload);
+        io.emit('listener_offline', payload);
       }
 
       io.emit('user_offline', { userId, role });

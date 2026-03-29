@@ -17,6 +17,16 @@ const verifyOtp = asyncHandler(async (req, res) => {
   return successResponse(res, data, 'OTP verified successfully');
 });
 
+const loginUser = asyncHandler(async (req, res) => {
+  const data = await authService.loginUserWithOtp({
+    ...req.body,
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+  });
+
+  return successResponse(res, data, 'User login successful');
+});
+
 const login = asyncHandler(async (req, res) => {
   const data = await authService.loginWithPassword({
     ...req.body,
@@ -25,6 +35,16 @@ const login = asyncHandler(async (req, res) => {
   });
 
   return successResponse(res, data, 'Login successful');
+});
+
+const loginListener = asyncHandler(async (req, res) => {
+  const data = await authService.loginListenerWithPassword({
+    ...req.body,
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+  });
+
+  return successResponse(res, data, 'Listener login successful');
 });
 
 const refresh = asyncHandler(async (req, res) => {
@@ -44,7 +64,9 @@ const logout = asyncHandler(async (req, res) => {
 module.exports = {
   sendOtp,
   verifyOtp,
+  loginUser,
   login,
+  loginListener,
   refresh,
   logout,
 };

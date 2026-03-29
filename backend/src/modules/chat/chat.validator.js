@@ -8,6 +8,10 @@ const chatActionSchema = z.object({
   reason: z.string().max(200).optional(),
 });
 
+const chatBodyActionSchema = chatActionSchema.extend({
+  sessionId: z.string().min(10),
+});
+
 const chatEndSchema = z.object({
   endReason: z
     .enum(['USER_ENDED', 'LISTENER_ENDED', 'CANCELLED', 'INSUFFICIENT_BALANCE', 'ERROR'])
@@ -25,6 +29,7 @@ const chatSessionsQuerySchema = z.object({
 module.exports = {
   chatRequestSchema,
   chatActionSchema,
+  chatBodyActionSchema,
   chatEndSchema,
   chatTokenRefreshSchema,
   chatSessionsQuerySchema,

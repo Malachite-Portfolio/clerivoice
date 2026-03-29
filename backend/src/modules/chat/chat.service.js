@@ -103,6 +103,10 @@ const finalizeChatSession = async ({
       io.to(`session:chat:${session.id}`).emit('chat_end_due_to_low_balance', payload);
     }
     io.to(`session:chat:${session.id}`).emit('chat_ended', payload);
+    io.to(`session:chat:${session.id}`).emit('session_ended', {
+      ...payload,
+      sessionType: 'chat',
+    });
   }
 
   return updated;
@@ -147,6 +151,8 @@ const requestChat = async ({ userId, listenerId }) => {
       channelName,
       userId,
       listenerId,
+      requester: session.user,
+      listener: session.listener,
       ratePerMinute: Number(session.ratePerMinute),
       requestedAt: session.requestedAt,
     });
@@ -255,7 +261,7 @@ const acceptChat = async ({ listenerId, sessionId }) => {
   };
 };
 
-const rejectChat = async ({ listenerId, sessionId }) => {
+const rejectChat = async ({ listenerId, sessionId, reason }) => {
   const session = await prisma.chatSession.findUnique({ where: { id: sessionId } });
 
   if (!session) {
@@ -266,7 +272,7 @@ const rejectChat = async ({ listenerId, sessionId }) => {
     throw new AppError('Only listener can reject this chat', 403, 'CHAT_REJECT_FORBIDDEN');
   }
 
-  return finalizeChatSession({
+  const updated = await finalizeChatSession({
     session,
     status: 'REJECTED',
     endReason: 'REJECTED',
@@ -274,6 +280,15 @@ const rejectChat = async ({ listenerId, sessionId }) => {
     endedBy: listenerId,
     force: true,
   });
+
+  if (io) {
+    io.to(`session:chat:${sessionId}`).emit('chat_rejected', {
+      sessionId,
+      reason: reason || 'Chat rejected by listener',
+    });
+  }
+
+  return updated;
 };
 
 const endChat = async ({ actorId, sessionId, endReason = 'USER_ENDED' }) => {

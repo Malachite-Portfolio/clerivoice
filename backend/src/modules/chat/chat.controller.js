@@ -20,10 +20,30 @@ const acceptChat = asyncHandler(async (req, res) => {
   return successResponse(res, data, 'Chat accepted');
 });
 
+const acceptChatDirect = asyncHandler(async (req, res) => {
+  const data = await chatService.acceptChat({
+    listenerId: req.user.id,
+    sessionId: req.body.sessionId,
+  });
+
+  return successResponse(res, data, 'Chat accepted');
+});
+
 const rejectChat = asyncHandler(async (req, res) => {
   const data = await chatService.rejectChat({
     listenerId: req.user.id,
     sessionId: req.params.sessionId,
+    reason: req.body.reason,
+  });
+
+  return successResponse(res, data, 'Chat rejected');
+});
+
+const rejectChatDirect = asyncHandler(async (req, res) => {
+  const data = await chatService.rejectChat({
+    listenerId: req.user.id,
+    sessionId: req.body.sessionId,
+    reason: req.body.reason,
   });
 
   return successResponse(res, data, 'Chat rejected');
@@ -70,7 +90,9 @@ const refreshChatToken = asyncHandler(async (req, res) => {
 module.exports = {
   requestChat,
   acceptChat,
+  acceptChatDirect,
   rejectChat,
+  rejectChatDirect,
   endChat,
   refreshChatToken,
   getSessions,

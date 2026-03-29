@@ -20,10 +20,29 @@ const acceptCall = asyncHandler(async (req, res) => {
   return successResponse(res, data, 'Call accepted');
 });
 
+const acceptCallDirect = asyncHandler(async (req, res) => {
+  const data = await callService.acceptCall({
+    listenerId: req.user.id,
+    sessionId: req.body.sessionId,
+  });
+
+  return successResponse(res, data, 'Call accepted');
+});
+
 const rejectCall = asyncHandler(async (req, res) => {
   const data = await callService.rejectCall({
     listenerId: req.user.id,
     sessionId: req.params.sessionId,
+    reason: req.body.reason,
+  });
+
+  return successResponse(res, data, 'Call rejected');
+});
+
+const rejectCallDirect = asyncHandler(async (req, res) => {
+  const data = await callService.rejectCall({
+    listenerId: req.user.id,
+    sessionId: req.body.sessionId,
     reason: req.body.reason,
   });
 
@@ -63,7 +82,9 @@ const refreshCallToken = asyncHandler(async (req, res) => {
 module.exports = {
   requestCall,
   acceptCall,
+  acceptCallDirect,
   rejectCall,
+  rejectCallDirect,
   endCall,
   getCallSessions,
   refreshCallToken,

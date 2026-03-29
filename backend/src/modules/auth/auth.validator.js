@@ -18,6 +18,8 @@ const verifyOtpSchema = z.object({
   deviceInfo: z.record(z.any()).optional(),
 });
 
+const loginUserSchema = verifyOtpSchema;
+
 const loginSchema = z
   .object({
     phoneOrEmail: z.string().min(4).optional(),
@@ -58,6 +60,33 @@ const loginSchema = z
     deviceInfo: value.deviceInfo,
   }));
 
+const loginListenerSchema = z
+  .object({
+    listenerId: z.string().min(3).optional(),
+    phoneOrEmail: z.string().min(4).optional(),
+    phone: z.string().min(7).optional(),
+    email: z.string().email().optional(),
+    password: z.string().min(6).max(120),
+    deviceId: z.string().max(200).optional(),
+    deviceInfo: z.record(z.any()).optional(),
+  })
+  .superRefine((value, ctx) => {
+    const identity = value.listenerId || value.phoneOrEmail || value.phone || value.email;
+    if (!identity) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide one of: listenerId, phoneOrEmail, phone, or email',
+        path: ['listenerId'],
+      });
+    }
+  })
+  .transform((value) => ({
+    listenerIdentity: value.listenerId || value.phoneOrEmail || value.phone || value.email,
+    password: value.password,
+    deviceId: value.deviceId,
+    deviceInfo: value.deviceInfo,
+  }));
+
 const refreshSchema = z.object({
   refreshToken: z.string().min(10),
 });
@@ -69,7 +98,9 @@ const logoutSchema = z.object({
 module.exports = {
   sendOtpSchema,
   verifyOtpSchema,
+  loginUserSchema,
   loginSchema,
+  loginListenerSchema,
   refreshSchema,
   logoutSchema,
 };

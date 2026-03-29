@@ -1,0 +1,123 @@
+{
+  "info": {
+    "name": "Clarivoice Admin APIs",
+    "_postman_id": "d7f5232f-6a15-4db5-bf7f-clarivoice-admin",
+    "description": "Admin Panel integration collection for Clarivoice backend.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth - Login",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/admin/auth/login",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"emailOrPhone\": \"admin@clarivoice.in\",\n  \"password\": \"admin123\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Dashboard Summary",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/admin/dashboard/summary"
+      }
+    },
+    {
+      "name": "Hosts - List",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/admin/hosts?page=1&pageSize=10&verified=all"
+      }
+    },
+    {
+      "name": "Hosts - Approve",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/admin/hosts/{{hostId}}/approve"
+      }
+    },
+    {
+      "name": "Hosts - Suspend",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/admin/hosts/{{hostId}}/suspend",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"reason\": \"policy violation\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Users - Credit Wallet",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/admin/users/{{userId}}/credit-wallet",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"amount\": 100,\n  \"reason\": \"goodwill\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Wallet - Transactions",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/admin/wallet/transactions?page=1&pageSize=10"
+      }
+    },
+    {
+      "name": "Referrals - List",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/admin/referrals?page=1&pageSize=10"
+      }
+    },
+    {
+      "name": "Sessions - Live",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/admin/sessions/live"
+      }
+    },
+    {
+      "name": "Support - Tickets",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/admin/support/tickets?page=1&pageSize=10"
+      }
+    },
+    {
+      "name": "Settings - Update",
+      "request": {
+        "method": "PATCH",
+        "url": "{{baseUrl}}/admin/settings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"minimumBalanceCall\": 30,\n  \"minimumBalanceChat\": 20,\n  \"lowBalanceWarningThresholdMinutes\": 2,\n  \"rechargePlans\": [159,249,449]\n}"
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000/api"
+    },
+    {
+      "key": "hostId",
+      "value": "host_1"
+    },
+    {
+      "key": "userId",
+      "value": "user_1"
+    }
+  ]
+}

@@ -112,6 +112,10 @@ const finalizeCallSession = async ({
       io.to(`session:call:${session.id}`).emit('call_end_due_to_low_balance', payload);
     }
     io.to(`session:call:${session.id}`).emit('call_ended', payload);
+    io.to(`session:call:${session.id}`).emit('session_ended', {
+      ...payload,
+      sessionType: 'call',
+    });
   }
 
   return updated;
@@ -127,6 +131,23 @@ const requestCall = async ({ userId, listenerId }) => {
       status: 'RINGING',
       requestedAt: new Date(),
       ratePerMinute: check.listener.callRatePerMinute,
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          displayName: true,
+          profileImageUrl: true,
+          phone: true,
+        },
+      },
+      listener: {
+        select: {
+          id: true,
+          displayName: true,
+          profileImageUrl: true,
+        },
+      },
     },
   });
 
@@ -155,6 +176,8 @@ const requestCall = async ({ userId, listenerId }) => {
       channelName,
       userId,
       listenerId,
+      requester: session.user,
+      listener: session.listener,
       ratePerMinute: Number(session.ratePerMinute),
       requestedAt: session.requestedAt,
     });

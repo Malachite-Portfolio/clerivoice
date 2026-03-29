@@ -7,6 +7,7 @@ const {
   chatRequestSchema,
   chatEndSchema,
   chatActionSchema,
+  chatBodyActionSchema,
   chatSessionsQuerySchema,
   chatTokenRefreshSchema,
 } = require('./chat.validator');
@@ -14,6 +15,20 @@ const {
 const router = express.Router();
 
 router.post('/request', authMiddleware, validate(chatRequestSchema), controller.requestChat);
+router.post(
+  '/accept',
+  authMiddleware,
+  allowRoles('LISTENER', 'ADMIN'),
+  validate(chatBodyActionSchema),
+  controller.acceptChatDirect
+);
+router.post(
+  '/reject',
+  authMiddleware,
+  allowRoles('LISTENER', 'ADMIN'),
+  validate(chatBodyActionSchema),
+  controller.rejectChatDirect
+);
 router.post(
   '/:sessionId/accept',
   authMiddleware,

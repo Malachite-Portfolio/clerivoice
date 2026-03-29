@@ -27,8 +27,18 @@ const getAvailability = asyncHandler(async (req, res) => {
   return successResponse(res, data);
 });
 
+const updateMyAvailability = asyncHandler(async (req, res) => {
+  const data = await listenerService.updateListenerAvailability({
+    listenerId: req.user.id,
+    availability: req.body.availability,
+  });
+
+  return successResponse(res, data, 'Listener availability updated');
+});
+
 module.exports = {
   getListeners,
   getListener,
   getAvailability,
+  updateMyAvailability,
 };

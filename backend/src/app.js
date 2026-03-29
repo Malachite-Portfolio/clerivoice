@@ -62,7 +62,10 @@ app.use(sanitizeInputMiddleware);
 app.use(globalRateLimiter);
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-app.use(env.API_PREFIX, routes);
+const apiPrefixes = Array.from(new Set([env.API_PREFIX, '/api/v1', '/api'].filter(Boolean)));
+apiPrefixes.forEach((prefix) => {
+  app.use(prefix, routes);
+});
 app.use('/api/agora', agoraRoutes);
 
 app.use(notFoundHandler);
