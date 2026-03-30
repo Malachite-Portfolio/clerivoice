@@ -1,6 +1,76 @@
+import { API_BASE_URL, API_ENDPOINTS } from "@/constants/api";
 import { api } from "@/services/http";
 import type { ApiResponse, AuthSession, LoginPayload } from "@/types";
 import type { AdminRole } from "@/types";
+
+const AUTH_DEBUG_ENABLED = process.env.NODE_ENV !== "production";
+
+function sanitizeAuthDebugValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeAuthDebugValue);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => {
+        if (
+          ["accessToken", "refreshToken", "token", "password", "otp"].includes(key)
+        ) {
+          return [key, "[REDACTED]"];
+        }
+        return [key, sanitizeAuthDebugValue(nestedValue)];
+      }),
+    );
+  }
+
+  return value;
+}
+
+function logAuthRequest(label: string, path: string, payload?: Record<string, unknown>) {
+  if (!AUTH_DEBUG_ENABLED) {
+    return;
+  }
+
+  console.debug(`[AdminAuth] ${label} request`, {
+    url: `${API_BASE_URL}${path}`,
+    payloadKeys: Object.keys(payload || {}),
+  });
+}
+
+function logAuthResponse(label: string, response: { status: number; data: unknown }) {
+  if (!AUTH_DEBUG_ENABLED) {
+    return;
+  }
+
+  console.debug(`[AdminAuth] ${label} response`, {
+    status: response.status,
+    body: sanitizeAuthDebugValue(response.data),
+  });
+}
+
+function logAuthError(
+  label: string,
+  path: string,
+  payload: Record<string, unknown> | undefined,
+  error: unknown,
+) {
+  if (!AUTH_DEBUG_ENABLED) {
+    return;
+  }
+
+  const typedError = error as {
+    response?: { status?: number; data?: unknown };
+    message?: string;
+  };
+
+  console.warn(`[AdminAuth] ${label} error`, {
+    url: `${API_BASE_URL}${path}`,
+    payloadKeys: Object.keys(payload || {}),
+    status: typedError.response?.status ?? null,
+    body: sanitizeAuthDebugValue(typedError.response?.data),
+    message: typedError.message || "Unknown error",
+  });
+}
 
 function normalizeRole(value?: string): AdminRole {
   const normalized = String(value ?? "admin").toLowerCase();
@@ -30,55 +100,25 @@ export const authService = {
   async login(payload: LoginPayload): Promise<AuthSession> {
     const emailOrPhone = payload.emailOrPhone.trim();
     const password = payload.password;
+    const requestBody = {
+      phoneOrEmail: emailOrPhone,
+      password,
+    };
 
-    const attempts = [
-      {
-        url: "/admin/auth/login",
-        body: {
-          phoneOrEmail: emailOrPhone,
-          password,
-        },
-      },
-      {
-        url: "/auth/login",
-        body: {
-          phoneOrEmail: emailOrPhone,
-          password,
-        },
-      },
-    ];
+    logAuthRequest("login", API_ENDPOINTS.auth.login, requestBody);
 
-    let lastError: unknown;
+    try {
+      const response = await api.post<ApiResponse<Record<string, unknown>>>(
+        API_ENDPOINTS.auth.login,
+        requestBody,
+      );
+      logAuthResponse("login", response);
 
-    for (const attempt of attempts) {
-      try {
-        const response = await api.post<ApiResponse<Record<string, unknown>>>(
-          attempt.url,
-          attempt.body,
-        );
-
-        return mapSessionResponse(response.data.data, emailOrPhone);
-      } catch (error) {
-        lastError = error;
-      }
+      return mapSessionResponse(response.data.data, emailOrPhone);
+    } catch (error) {
+      logAuthError("login", API_ENDPOINTS.auth.login, requestBody, error);
+      throw error;
     }
-
-    if (
-      process.env.NODE_ENV === "development" &&
-      emailOrPhone.toLowerCase() === "admin25" &&
-      password === "Admin@123"
-    ) {
-      return {
-        accessToken: "demo-access-token",
-        refreshToken: "demo-refresh-token",
-        role: "admin",
-        adminId: "admin25-demo",
-        name: "Clarivoice Admin",
-        email: "admin25",
-      };
-    }
-
-    throw lastError;
   },
 
   async me(): Promise<{
@@ -87,8 +127,12 @@ export const authService = {
     email: string;
     role: AdminRole;
   }> {
+    logAuthRequest("me", API_ENDPOINTS.auth.me);
     try {
-      const response = await api.get<ApiResponse<Record<string, unknown>>>("/admin/me");
+      const response = await api.get<ApiResponse<Record<string, unknown>>>(
+        API_ENDPOINTS.auth.me,
+      );
+      logAuthResponse("me", response);
       const user = response.data.data;
       return {
         id: String(user.id ?? ""),
@@ -96,27 +140,24 @@ export const authService = {
         email: String(user.email ?? ""),
         role: normalizeRole(String(user.role ?? "admin")),
       };
-    } catch {
-      const response = await api.get<ApiResponse<Record<string, unknown>>>("/me");
-      const user = response.data.data;
-      return {
-        id: String(user.id ?? ""),
-        name: String(user.displayName ?? user.name ?? "Admin"),
-        email: String(user.email ?? ""),
-        role: normalizeRole(String(user.role ?? "admin")),
-      };
+    } catch (error) {
+      logAuthError("me", API_ENDPOINTS.auth.me, undefined, error);
+      throw error;
     }
   },
 
   async logout(refreshToken: string) {
+    const requestBody = { refreshToken };
+    logAuthRequest("logout", API_ENDPOINTS.auth.logout, requestBody);
     try {
-      await api.post<ApiResponse<{ revoked: boolean }>>("/admin/auth/logout", {
-        refreshToken,
-      });
-    } catch {
-      await api.post<ApiResponse<{ revoked: boolean }>>("/auth/logout", {
-        refreshToken,
-      });
+      const response = await api.post<ApiResponse<{ revoked: boolean }>>(
+        API_ENDPOINTS.auth.logout,
+        requestBody,
+      );
+      logAuthResponse("logout", response);
+    } catch (error) {
+      logAuthError("logout", API_ENDPOINTS.auth.logout, requestBody, error);
+      throw error;
     }
   },
 };

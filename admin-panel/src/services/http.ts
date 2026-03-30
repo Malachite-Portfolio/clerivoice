@@ -1,11 +1,32 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
-import { API_BASE_URL, API_CONFIG_ERROR } from "@/constants/app";
+import { API_BASE_URL, API_CONFIG_ERROR, API_ENDPOINTS } from "@/constants/api";
 import { clearStoredAuthSession, getStoredAuthSession, setStoredAuthSession } from "@/features/auth/storage";
 import type { ApiResponse, AuthSession } from "@/types";
 
 type RetryConfig = InternalAxiosRequestConfig & {
   _retry?: boolean;
 };
+
+const AUTH_DEBUG_ENABLED = process.env.NODE_ENV !== "production";
+
+function sanitizeAuthDebugValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeAuthDebugValue);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => {
+        if (["accessToken", "refreshToken", "token"].includes(key)) {
+          return [key, "[REDACTED]"];
+        }
+        return [key, sanitizeAuthDebugValue(nestedValue)];
+      }),
+    );
+  }
+
+  return value;
+}
 
 export const api = axios.create({
   baseURL: API_BASE_URL || undefined,
@@ -17,7 +38,6 @@ let hasLoggedApiConfigError = false;
 api.interceptors.request.use((config) => {
   if (!API_BASE_URL) {
     if (!hasLoggedApiConfigError) {
-      // eslint-disable-next-line no-console
       console.error(API_CONFIG_ERROR || "API base URL is not configured");
       hasLoggedApiConfigError = true;
     }
@@ -81,22 +101,25 @@ api.interceptors.response.use(
     isRefreshing = true;
 
     try {
-      let response;
+      if (AUTH_DEBUG_ENABLED) {
+        console.debug("[AdminAuth] refresh request", {
+          url: `${API_BASE_URL}${API_ENDPOINTS.auth.refresh}`,
+          payloadKeys: ["refreshToken"],
+        });
+      }
 
-      try {
-        response = await axios.post<ApiResponse<Partial<AuthSession>>>(
-          `${API_BASE_URL}/admin/auth/refresh`,
-          {
-            refreshToken: session.refreshToken,
-          },
-        );
-      } catch {
-        response = await axios.post<ApiResponse<Partial<AuthSession>>>(
-          `${API_BASE_URL}/auth/refresh`,
-          {
-            refreshToken: session.refreshToken,
-          },
-        );
+      const response = await axios.post<ApiResponse<Partial<AuthSession>>>(
+        `${API_BASE_URL}${API_ENDPOINTS.auth.refresh}`,
+        {
+          refreshToken: session.refreshToken,
+        },
+      );
+
+      if (AUTH_DEBUG_ENABLED) {
+        console.debug("[AdminAuth] refresh response", {
+          status: response.status,
+          body: sanitizeAuthDebugValue(response.data),
+        });
       }
 
       const nextSession = {
@@ -111,6 +134,20 @@ api.interceptors.response.use(
 
       return api(original);
     } catch (refreshError) {
+      if (AUTH_DEBUG_ENABLED) {
+        const typedError = refreshError as {
+          response?: { status?: number; data?: unknown };
+          message?: string;
+        };
+
+        console.warn("[AdminAuth] refresh error", {
+          url: `${API_BASE_URL}${API_ENDPOINTS.auth.refresh}`,
+          payloadKeys: ["refreshToken"],
+          status: typedError.response?.status ?? null,
+          body: sanitizeAuthDebugValue(typedError.response?.data),
+          message: typedError.message || "Unknown error",
+        });
+      }
       clearStoredAuthSession();
       flushQueue(refreshError);
       return Promise.reject(refreshError);

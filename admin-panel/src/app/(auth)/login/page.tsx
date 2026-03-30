@@ -43,7 +43,7 @@ export default function LoginPage() {
         <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
           <div>
             <label className="mb-2 block text-sm text-app-text-secondary">
-              Admin ID / Phone
+              Email / Phone
             </label>
             <div className="relative">
               <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-app-text-muted" />
@@ -52,7 +52,7 @@ export default function LoginPage() {
                   required: "Email or phone is required",
                 })}
                 className="pl-9"
-                placeholder="admin25"
+                placeholder="admin@example.com"
               />
             </div>
             {errors.emailOrPhone ? (

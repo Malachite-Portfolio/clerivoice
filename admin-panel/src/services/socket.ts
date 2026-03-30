@@ -1,5 +1,5 @@
 import { io, type Socket } from "socket.io-client";
-import { SOCKET_BASE_URL } from "@/constants/app";
+import { SOCKET_BASE_URL } from "@/constants/api";
 
 let adminSocket: Socket | null = null;
 

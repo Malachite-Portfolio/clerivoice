@@ -44,14 +44,27 @@ const login = asyncHandler(async (req, res) => {
 });
 
 const refresh = asyncHandler(async (req, res) => {
+  logger.info('[AdminAuth] refresh request received', {
+    hasRefreshToken: Boolean(req.body?.refreshToken),
+    ipAddress: req.ip,
+  });
   const data = await authService.refreshAccessToken(req.body.refreshToken);
   const payload = verifyAccessToken(data.accessToken);
   assertAdminRole(payload.role);
+  logger.info('[AdminAuth] refresh role check passed', {
+    role: payload.role,
+    userId: payload.sub,
+  });
 
   return successResponse(res, data, 'Admin token refreshed');
 });
 
 const logout = asyncHandler(async (req, res) => {
+  logger.info('[AdminAuth] logout request received', {
+    hasRefreshToken: Boolean(req.body?.refreshToken),
+    userId: req.user?.id || null,
+    ipAddress: req.ip,
+  });
   await authService.logout({
     refreshToken: req.body.refreshToken,
     userId: req.user?.id,
@@ -61,6 +74,11 @@ const logout = asyncHandler(async (req, res) => {
 });
 
 const me = asyncHandler(async (req, res) => {
+  logger.info('[AdminAuth] me request received', {
+    userId: req.user?.id || null,
+    role: req.user?.role || null,
+    ipAddress: req.ip,
+  });
   const user = await prisma.user.findUnique({
     where: { id: req.user.id },
     select: {
@@ -78,6 +96,12 @@ const me = asyncHandler(async (req, res) => {
     throw new AppError('Admin not found', 404, 'ADMIN_NOT_FOUND');
   }
 
+  logger.info('[AdminAuth] me lookup result', {
+    found: Boolean(user),
+    userId: user.id,
+    role: user.role,
+    status: user.status,
+  });
   return successResponse(res, user);
 });
 

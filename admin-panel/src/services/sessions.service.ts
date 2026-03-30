@@ -1,10 +1,11 @@
+import { API_ENDPOINTS } from "@/constants/api";
 import { api } from "@/services/http";
 import type { ApiResponse, LiveSession, PaginatedResponse } from "@/types";
 
 export const sessionsService = {
   async getLiveSessions() {
     const response = await api.get<ApiResponse<LiveSession[]>>(
-      "/admin/sessions/live",
+      API_ENDPOINTS.sessions.live,
     );
     return response.data.data;
   },
@@ -15,7 +16,7 @@ export const sessionsService = {
     status?: string;
   }) {
     const response = await api.get<ApiResponse<PaginatedResponse<LiveSession>>>(
-      "/admin/sessions/calls",
+      API_ENDPOINTS.sessions.calls,
       { params },
     );
     return response.data.data;
@@ -27,7 +28,7 @@ export const sessionsService = {
     status?: string;
   }) {
     const response = await api.get<ApiResponse<PaginatedResponse<LiveSession>>>(
-      "/admin/sessions/chats",
+      API_ENDPOINTS.sessions.chats,
       { params },
     );
     return response.data.data;
@@ -35,7 +36,7 @@ export const sessionsService = {
 
   async forceEndSession(sessionId: string, reason: string) {
     const response = await api.post<ApiResponse<{ success: true }>>(
-      `/admin/sessions/${sessionId}/end`,
+      API_ENDPOINTS.sessions.forceEnd(sessionId),
       { reason },
     );
     return response.data.data;

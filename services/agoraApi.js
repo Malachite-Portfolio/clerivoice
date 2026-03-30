@@ -1,3 +1,4 @@
+import { API_ENDPOINTS } from '../constants/api';
 import { apiClient } from './apiClient';
 
 export const requestRtcToken = async ({
@@ -5,7 +6,7 @@ export const requestRtcToken = async ({
   role = 'publisher',
   expirySeconds,
 }) => {
-  const response = await apiClient.post('/agora/rtc-token', {
+  const response = await apiClient.post(API_ENDPOINTS.agora.rtcToken, {
     sessionId,
     role,
     expirySeconds,
@@ -18,7 +19,7 @@ export const requestChatToken = async ({
   sessionId,
   expirySeconds,
 }) => {
-  const response = await apiClient.post('/agora/chat-token', {
+  const response = await apiClient.post(API_ENDPOINTS.agora.chatToken, {
     sessionId,
     expirySeconds,
   });

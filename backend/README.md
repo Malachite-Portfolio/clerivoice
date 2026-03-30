@@ -141,6 +141,7 @@ If `AGORA_APP_ID` or `AGORA_APP_CERTIFICATE` is missing, startup fails with:
 - User phone: `+910000000201`
 - Password for seeded admin/listener: `Admin@123`
 - Demo OTP (when enabled): `123456`
+- Demo listener bypass ID/password: `000000101` / `12345678` only when `DEMO_LISTENER_LOGIN_BYPASS=true`
 - Recharge plans: `159`, `249`, `449`
 - Coupon: `FLAT200`
 

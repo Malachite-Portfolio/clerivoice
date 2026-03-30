@@ -1,3 +1,4 @@
+import { API_ENDPOINTS } from "@/constants/api";
 import { api } from "@/services/http";
 import type {
   ApiResponse,
@@ -13,7 +14,7 @@ import type {
 export const hostsService = {
   async getHosts(query: HostListQuery = {}) {
     const response = await api.get<ApiResponse<PaginatedResponse<Host>>>(
-      "/admin/hosts",
+      API_ENDPOINTS.hosts.base,
       {
         params: query,
       },
@@ -22,18 +23,18 @@ export const hostsService = {
   },
 
   async createHost(payload: HostCreatePayload) {
-    const response = await api.post<ApiResponse<Host>>("/admin/hosts", payload);
+    const response = await api.post<ApiResponse<Host>>(API_ENDPOINTS.hosts.base, payload);
     return response.data.data;
   },
 
   async getHostById(hostId: string) {
-    const response = await api.get<ApiResponse<Host>>(`/admin/hosts/${hostId}`);
+    const response = await api.get<ApiResponse<Host>>(API_ENDPOINTS.hosts.byId(hostId));
     return response.data.data;
   },
 
   async updateHost(hostId: string, payload: Partial<HostCreatePayload>) {
     const response = await api.patch<ApiResponse<Host>>(
-      `/admin/hosts/${hostId}`,
+      API_ENDPOINTS.hosts.byId(hostId),
       payload,
     );
     return response.data.data;
@@ -56,7 +57,7 @@ export const hostsService = {
     };
 
     const response = await api.post<ApiResponse<Host>>(
-      `/admin/hosts/${hostId}/${endpointByAction[action]}`,
+      API_ENDPOINTS.hosts.action(hostId, endpointByAction[action]),
       payload ?? {},
     );
     return response.data.data;
@@ -64,7 +65,7 @@ export const hostsService = {
 
   async bulkAction(hostIds: string[], action: HostAction) {
     const response = await api.post<ApiResponse<{ updatedCount: number }>>(
-      "/admin/hosts/bulk-action",
+      API_ENDPOINTS.hosts.bulkAction,
       {
         hostIds,
         action,
@@ -75,14 +76,14 @@ export const hostsService = {
 
   async getHostSessionHistory(hostId: string) {
     const response = await api.get<ApiResponse<HostSessionHistoryItem[]>>(
-      `/admin/hosts/${hostId}/sessions`,
+      API_ENDPOINTS.hosts.sessions(hostId),
     );
     return response.data.data;
   },
 
   async getHostPricingLogs(hostId: string) {
     const response = await api.get<ApiResponse<HostPriceLog[]>>(
-      `/admin/hosts/${hostId}/pricing-history`,
+      API_ENDPOINTS.hosts.pricingHistory(hostId),
     );
     return response.data.data;
   },

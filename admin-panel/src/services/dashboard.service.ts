@@ -1,3 +1,4 @@
+import { API_ENDPOINTS } from "@/constants/api";
 import { api } from "@/services/http";
 import type {
   ApiResponse,
@@ -11,35 +12,35 @@ import type {
 export const dashboardService = {
   async summary() {
     const response = await api.get<ApiResponse<DashboardSummary>>(
-      "/admin/dashboard/summary",
+      API_ENDPOINTS.dashboard.summary,
     );
     return response.data.data;
   },
 
   async revenueSeries() {
     const response = await api.get<ApiResponse<RevenuePoint[]>>(
-      "/admin/dashboard/revenue-series",
+      API_ENDPOINTS.dashboard.revenueSeries,
     );
     return response.data.data;
   },
 
   async topEarningHosts() {
     const response = await api.get<ApiResponse<TopEarningHost[]>>(
-      "/admin/dashboard/top-hosts",
+      API_ENDPOINTS.dashboard.topHosts,
     );
     return response.data.data;
   },
 
   async recentSessions() {
     const response = await api.get<ApiResponse<LiveSession[]>>(
-      "/admin/dashboard/recent-sessions",
+      API_ENDPOINTS.dashboard.recentSessions,
     );
     return response.data.data;
   },
 
   async recentRecharges() {
     const response = await api.get<ApiResponse<WalletTransaction[]>>(
-      "/admin/dashboard/recent-recharges",
+      API_ENDPOINTS.dashboard.recentRecharges,
     );
     return response.data.data;
   },

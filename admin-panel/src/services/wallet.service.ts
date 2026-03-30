@@ -1,3 +1,4 @@
+import { API_ENDPOINTS } from "@/constants/api";
 import { api } from "@/services/http";
 import type {
   ApiResponse,
@@ -9,7 +10,7 @@ import type {
 export const walletService = {
   async getOverview() {
     const response = await api.get<ApiResponse<WalletOverview>>(
-      "/admin/wallet/overview",
+      API_ENDPOINTS.wallet.overview,
     );
     return response.data.data;
   },
@@ -22,7 +23,7 @@ export const walletService = {
     search?: string;
   }) {
     const response = await api.get<ApiResponse<PaginatedResponse<WalletTransaction>>>(
-      "/admin/wallet/transactions",
+      API_ENDPOINTS.wallet.transactions,
       { params },
     );
     return response.data.data;
@@ -35,7 +36,7 @@ export const walletService = {
     reason: string;
   }) {
     const response = await api.post<ApiResponse<{ success: true }>>(
-      "/admin/wallet/manual-adjustment",
+      API_ENDPOINTS.wallet.manualAdjustment,
       payload,
     );
     return response.data.data;

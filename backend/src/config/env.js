@@ -36,6 +36,14 @@ const envSchema = z.object({
   DEMO_OTP_CODE: z.string().default('123456'),
   DEMO_LOGIN_PHONE: z.string().default('+916386361769'),
   DEMO_LOGIN_OTP: z.string().default('123456'),
+  DEMO_USER_OTP_BYPASS: z
+    .string()
+    .default('false')
+    .transform((value) => value.toLowerCase() === 'true'),
+  DEMO_LISTENER_LOGIN_BYPASS: z
+    .string()
+    .default('false')
+    .transform((value) => value.toLowerCase() === 'true'),
 
   PAYMENT_PROVIDER: z.enum(['mock', 'razorpay', 'stripe']).default('mock'),
   PAYMENT_WEBHOOK_SECRET: z.string().default('webhook-secret'),

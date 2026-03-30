@@ -2,6 +2,7 @@ const { app } = require('./app');
 const { env } = require('./config/env');
 const { logger } = require('./config/logger');
 const { connectRedis } = require('./config/redis');
+const { connectPrisma } = require('./config/prisma');
 const { SessionBillingManager } = require('./jobs/sessionBillingManager');
 const { initSocket } = require('./socket');
 
@@ -42,6 +43,8 @@ const startServer = async () => {
   if (!PORT) {
     throw new Error('PORT is required (Railway)');
   }
+
+  await connectPrisma();
 
   const httpServer = require('http').createServer(app);
   logger.info('HTTP server wired to express app instance', {

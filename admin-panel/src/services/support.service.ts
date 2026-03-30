@@ -1,3 +1,4 @@
+import { API_ENDPOINTS } from "@/constants/api";
 import { api } from "@/services/http";
 import type { ApiResponse, PaginatedResponse, SupportTicket } from "@/types";
 
@@ -10,7 +11,7 @@ export const supportService = {
     search?: string;
   }) {
     const response = await api.get<ApiResponse<PaginatedResponse<SupportTicket>>>(
-      "/admin/support/tickets",
+      API_ENDPOINTS.support.tickets,
       { params },
     );
     return response.data.data;
@@ -26,7 +27,7 @@ export const supportService = {
     },
   ) {
     const response = await api.patch<ApiResponse<SupportTicket>>(
-      `/admin/support/tickets/${ticketId}`,
+      API_ENDPOINTS.support.byId(ticketId),
       payload,
     );
     return response.data.data;

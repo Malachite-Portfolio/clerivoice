@@ -79,7 +79,7 @@ const PhoneNumberScreen = ({ navigation }) => {
             <AppLogo size="md" style={styles.logoCard} />
 
             <Text style={styles.heading}>Enter your phone number</Text>
-            <Text style={styles.subtitle}>We'll send you a verification code</Text>
+            <Text style={styles.subtitle}>We'll continue securely with your number</Text>
 
             <View style={styles.phoneInputWrap}>
               <View style={styles.countryCodeSection}>
@@ -113,14 +113,14 @@ const PhoneNumberScreen = ({ navigation }) => {
                 style={styles.buttonGradient}
               >
               <Text style={[styles.buttonLabel, !isValidPhone && styles.buttonLabelDisabled]}>
-                  {loading ? 'Sending...' : 'Continue'}
+                  {loading ? 'Continuing...' : 'Continue'}
                 </Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
 
           <Text style={styles.footerText}>
-            Your number is private and used only for secure verification.
+            Your number is private and used only for secure sign in.
           </Text>
         </KeyboardAvoidingView>
       </SafeAreaView>
