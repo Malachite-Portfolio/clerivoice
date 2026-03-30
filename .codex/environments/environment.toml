@@ -13,3 +13,12 @@ git add .
 git commit -m "fix backend startup"
 git push
 '''
+
+[[actions]]
+name = "Test"
+icon = "tool"
+command = '''
+curl -X POST https://clerivoice-production.up.railway.app/api/v1/admin/auth/login \
+-H "Content-Type: application/json" \
+-d "{\"phoneOrEmail\":\"admin25\",\"password\":\"Admin@123\"}"
+'''
