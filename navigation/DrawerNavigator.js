@@ -20,6 +20,7 @@ import ChatCallHubScreen from '../screens/ChatCallHubScreen';
 import { drawerMenuItems } from '../constants/mockData';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { getAuthEntryRouteName } from './navigationRef';
 import AppLogo from '../components/AppLogo';
 
 const Drawer = createDrawerNavigator();
@@ -33,19 +34,37 @@ const sectionBreaks = {
 const CustomDrawerContent = ({ navigation }) => {
   const { session, logout } = useAuth();
 
-  const onMenuPress = (item) => {
-    if (item.route) {
-      navigation.navigate(item.route);
+  const navigateToRoute = (routeName) => {
+    const parentNavigation = navigation.getParent();
+    const usesParentRoute = ['MyWallet', 'Offers', 'InviteFriends'].includes(routeName);
+
+    console.log('[Wallet] route navigation', {
+      from: 'Drawer',
+      to: routeName,
+    });
+
+    if (usesParentRoute && parentNavigation) {
+      parentNavigation.navigate(routeName);
       navigation.closeDrawer();
+      return;
+    }
+
+    navigation.navigate(routeName);
+    navigation.closeDrawer();
+  };
+
+  const onMenuPress = async (item) => {
+    if (item.route) {
+      navigateToRoute(item.route);
       return;
     }
 
     if (item.id === 'logout') {
       navigation.closeDrawer();
-      logout();
+      await logout();
       navigation.reset({
         index: 0,
-        routes: [{ name: 'Onboarding' }],
+        routes: [{ name: getAuthEntryRouteName() }],
       });
       return;
     }

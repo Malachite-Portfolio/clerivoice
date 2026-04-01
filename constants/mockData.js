@@ -55,6 +55,7 @@ export const drawerMenuItems = [
     id: 'refer',
     title: 'Refer and Earn',
     icon: 'gift-outline',
+    route: 'InviteFriends',
   },
   {
     id: 'care',

@@ -7,6 +7,8 @@ const {
   sendOtpSchema,
   verifyOtpSchema,
   loginUserSchema,
+  listenerSendOtpSchema,
+  listenerVerifyOtpSchema,
   loginSchema,
   loginListenerSchema,
   refreshSchema,
@@ -16,7 +18,19 @@ const {
 const router = express.Router();
 
 router.post('/send-otp', authRateLimiter, validate(sendOtpSchema), controller.sendOtp);
+router.post(
+  '/send-listener-otp',
+  authRateLimiter,
+  validate(listenerSendOtpSchema),
+  controller.sendListenerOtp
+);
 router.post('/verify-otp', authRateLimiter, validate(verifyOtpSchema), controller.verifyOtp);
+router.post(
+  '/verify-listener-otp',
+  authRateLimiter,
+  validate(listenerVerifyOtpSchema),
+  controller.verifyListenerOtp
+);
 router.post('/login-user', authRateLimiter, validate(loginUserSchema), controller.loginUser);
 router.post('/login', authRateLimiter, validate(loginSchema), controller.login);
 router.post(

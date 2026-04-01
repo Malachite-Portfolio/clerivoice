@@ -4,12 +4,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import theme from '../constants/theme';
+import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
+import { useAppVariant } from '../context/AppVariantContext';
 import AppLogo from '../components/AppLogo';
-import { APP_MODE } from '../constants/api';
+import { getAuthEntryRouteName, getHomeRouteName } from '../navigation/navigationRef';
 
 const SplashScreen = ({ navigation }) => {
   const { session, isHydrated } = useAuth();
+  const { appDisplayName, isListenerApp } = useAppVariant();
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.9)).current;
 
@@ -32,11 +35,28 @@ const SplashScreen = ({ navigation }) => {
         return;
       }
       if (session?.accessToken) {
-        navigation.replace(session?.user?.role === 'LISTENER' ? 'ListenerHome' : 'MainDrawer');
+        if (AUTH_DEBUG_ENABLED) {
+            console.log('[SplashScreen] navigating to authenticated route', {
+              role: session?.user?.role || null,
+              targetRoute: getHomeRouteName(),
+            });
+        }
+        navigation.reset({
+          index: 0,
+          routes: [{ name: getHomeRouteName() }],
+        });
         return;
       }
 
-      navigation.replace(APP_MODE === 'listener' ? 'ListenerLogin' : 'Onboarding');
+      if (AUTH_DEBUG_ENABLED) {
+        console.log('[SplashScreen] navigating to auth entry route', {
+          targetRoute: getAuthEntryRouteName(),
+        });
+      }
+      navigation.reset({
+        index: 0,
+        routes: [{ name: getAuthEntryRouteName() }],
+      });
     }, 2500);
 
     return () => clearTimeout(timer);
@@ -57,7 +77,9 @@ const SplashScreen = ({ navigation }) => {
         </Animated.View>
 
         <Animated.Text style={[styles.tagline, { opacity }]}>
-          Anonymous support, meaningful conversations
+          {isListenerApp
+            ? `${appDisplayName} keeps you ready for live calls and chats`
+            : `${appDisplayName} keeps anonymous support one tap away`}
         </Animated.Text>
       </SafeAreaView>
     </LinearGradient>

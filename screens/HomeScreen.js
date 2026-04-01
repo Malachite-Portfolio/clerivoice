@@ -1,771 +1,354 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Alert,
-  AppState,
-  Image,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { Alert, AppState, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import SectionTitle from '../components/SectionTitle';
 import StoryAvatar from '../components/StoryAvatar';
 import SupportCard from '../components/SupportCard';
 import WalletPill from '../components/WalletPill';
 import BottomSheetAnonymous from '../components/BottomSheetAnonymous';
-import AppLogo from '../components/AppLogo';
-import { tabs } from '../constants/mockData';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { useWalletFlow } from '../context/WalletFlowContext';
+import { resetToAuthEntry } from '../navigation/navigationRef';
+import { isUnauthorizedApiError } from '../services/apiClient';
 import { fetchHostAvailability, fetchHosts } from '../services/listenersApi';
-import {
-  getWalletSummary,
-  requestCall,
-  requestChat,
-} from '../services/sessionApi';
-import {
-  connectRealtimeSocket,
-  subscribeRealtimeSocketState,
-} from '../services/realtimeSocket';
+import { getChatSessions, getInboxItems, getWalletSummary, requestCall, requestChat } from '../services/sessionApi';
+import { connectRealtimeSocket, subscribeRealtimeSocketState } from '../services/realtimeSocket';
 import { queryKeys } from '../services/queryClient';
+import { requestCallAudioPermissions } from '../services/audioPermissions';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
-
-const hostQueryParams = {
-  page: 1,
-  limit: 30,
-  includeOnlyActive: true,
-  includeOnlyVisible: true,
-};
-
-const toUpper = (value) => String(value || '').toUpperCase();
-
-const isVisibleHost = (item) => {
-  if (item?.isVisible === false) {
-    return false;
-  }
-
-  return !['HIDDEN', 'DELETED'].includes(
-    toUpper(item?.visibility || item?.profileVisibility),
-  );
-};
-
-const isActiveHost = (item) => {
-  if (item?.isEnabled === false) {
-    return false;
-  }
-
-  const accountStatus = toUpper(item?.user?.status || item?.accountStatus || item?.status);
-  if (accountStatus && ['BLOCKED', 'SUSPENDED', 'DELETED', 'INACTIVE'].includes(accountStatus)) {
-    return false;
-  }
-
-  const verificationStatus = toUpper(item?.verificationStatus);
-  if (verificationStatus && verificationStatus !== 'VERIFIED') {
-    return false;
-  }
-
-  return true;
-};
-
-const isOnlineHost = (item) => toUpper(item?.availability) === 'ONLINE';
-
-const normalizeHostQuote = (hostName) =>
-  `A safe and private support space with ${hostName}.`;
-
-const parseRate = (value, fallback = 0) => {
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) {
-    return fallback;
-  }
-  return parsed;
+const TABS = ['Verified', 'Inbox'];
+const SYNC = { connected: 'connected', reconnecting: 'reconnecting', disconnected: 'disconnected' };
+const hostQueryParams = { page: 1, limit: 30, includeOnlyActive: true, includeOnlyVisible: true };
+const up = (v) => String(v || '').toUpperCase();
+const img = (v) => (typeof v === 'string' ? { uri: v } : v || avatarPlaceholder);
+const fmtTime = (v) => {
+  if (!v) return '';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return '';
+  const n = new Date();
+  const sameDay = d.getDate() === n.getDate() && d.getMonth() === n.getMonth() && d.getFullYear() === n.getFullYear();
+  return sameDay ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 };
 
 const HomeScreen = ({ navigation }) => {
   const { session } = useAuth();
+  const { currentBalance, setCurrentBalance } = useWalletFlow();
   const queryClient = useQueryClient();
-
-  const [activeTab, setActiveTab] = useState(tabs[0]);
+  const [activeTab, setActiveTab] = useState(TABS[0]);
   const [showAnonymousModal, setShowAnonymousModal] = useState(false);
-  const [socketConnected, setSocketConnected] = useState(false);
+  const [socketState, setSocketState] = useState(SYNC.disconnected);
 
-  const hostsQuery = useQuery({
-    queryKey: queryKeys.hosts.list(hostQueryParams),
-    queryFn: () => fetchHosts(hostQueryParams),
-    staleTime: 10000,
-  });
-
-  const walletQuery = useQuery({
-    queryKey: queryKeys.wallet.summary,
-    queryFn: getWalletSummary,
-    staleTime: 10000,
-    enabled: Boolean(session?.accessToken),
+  const hostsQuery = useQuery({ queryKey: queryKeys.hosts.list(hostQueryParams), queryFn: () => fetchHosts(hostQueryParams), staleTime: 10000 });
+  const walletQuery = useQuery({ queryKey: queryKeys.wallet.summary, queryFn: getWalletSummary, staleTime: 10000, enabled: Boolean(session?.accessToken) });
+  const inboxQuery = useQuery({
+    queryKey: queryKeys.sessions.inbox(session?.user?.role || 'user'),
+    queryFn: () => getInboxItems({ currentUserId: session?.user?.id, limit: 12 }),
+    staleTime: 8000,
+    enabled: Boolean(session?.accessToken) && activeTab === 'Inbox',
   });
 
   const refreshLiveData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.hosts.all }),
       queryClient.invalidateQueries({ queryKey: queryKeys.wallet.summary }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all }),
     ]);
   }, [queryClient]);
 
-  useFocusEffect(
-    useCallback(() => {
-      refreshLiveData();
-    }, [refreshLiveData]),
-  );
+  useFocusEffect(useCallback(() => { refreshLiveData(); }, [refreshLiveData]));
 
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') {
-        refreshLiveData();
-      }
-    });
-
-    return () => {
-      subscription.remove();
-    };
+    const sub = AppState.addEventListener('change', (state) => { if (state === 'active') refreshLiveData(); });
+    return () => sub.remove();
   }, [refreshLiveData]);
 
   useEffect(() => {
     if (!session?.accessToken) {
-      setSocketConnected(false);
+      setSocketState(SYNC.disconnected);
       return undefined;
     }
-
     const socket = connectRealtimeSocket(session.accessToken);
-    const unsubscribeSocketState = subscribeRealtimeSocketState(({ connected }) => {
-      setSocketConnected(connected);
-    });
-
-    if (!socket) {
-      return unsubscribeSocketState;
-    }
-
-    const invalidateHosts = () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.hosts.all });
-    };
-    const invalidateWallet = () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.wallet.summary });
-    };
-
-    socket.on('host_updated', invalidateHosts);
-    socket.on('host_deleted', invalidateHosts);
-    socket.on('host_status_changed', invalidateHosts);
-    socket.on('pricing_updated', invalidateHosts);
-    socket.on('referral_updated', invalidateHosts);
-    socket.on('listener_status_changed', invalidateHosts);
-    socket.on('wallet_updated', invalidateWallet);
-
+    const unsubscribe = subscribeRealtimeSocketState(({ state }) => setSocketState(state || SYNC.disconnected));
+    if (!socket) return unsubscribe;
+    const invalidateHosts = () => queryClient.invalidateQueries({ queryKey: queryKeys.hosts.all });
+    const invalidateWallet = () => queryClient.invalidateQueries({ queryKey: queryKeys.wallet.summary });
+    const invalidateSessions = () => queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
+    ['host_updated', 'host_deleted', 'host_status_changed', 'pricing_updated', 'referral_updated', 'listener_status_changed'].forEach((eventName) => socket.on(eventName, invalidateHosts));
+    ['wallet_updated'].forEach((eventName) => socket.on(eventName, invalidateWallet));
+    ['chat_started', 'chat_accepted', 'chat_message', 'chat_ended', 'call_started', 'call_accepted', 'call_ended'].forEach((eventName) => socket.on(eventName, invalidateSessions));
     return () => {
-      socket.off('host_updated', invalidateHosts);
-      socket.off('host_deleted', invalidateHosts);
-      socket.off('host_status_changed', invalidateHosts);
-      socket.off('pricing_updated', invalidateHosts);
-      socket.off('referral_updated', invalidateHosts);
-      socket.off('listener_status_changed', invalidateHosts);
-      socket.off('wallet_updated', invalidateWallet);
-      unsubscribeSocketState();
+      ['host_updated', 'host_deleted', 'host_status_changed', 'pricing_updated', 'referral_updated', 'listener_status_changed'].forEach((eventName) => socket.off(eventName, invalidateHosts));
+      ['wallet_updated'].forEach((eventName) => socket.off(eventName, invalidateWallet));
+      ['chat_started', 'chat_accepted', 'chat_message', 'chat_ended', 'call_started', 'call_accepted', 'call_ended'].forEach((eventName) => socket.off(eventName, invalidateSessions));
+      unsubscribe();
     };
   }, [queryClient, session?.accessToken]);
 
-  const walletBalance = walletQuery.data?.balance || 0;
-  const hostItems = hostsQuery.data?.items || [];
-  const filteredHosts = useMemo(
-    () => hostItems.filter((item) => isVisibleHost(item) && isActiveHost(item)),
-    [hostItems],
-  );
-
-  const transformedHosts = useMemo(
-    () =>
-      filteredHosts.map((item) => {
-        const callRate = parseRate(item.callRatePerMinute, 0);
-        const chatRate = parseRate(item.chatRatePerMinute, callRate);
-        const displayName = item.user?.displayName || 'Support Host';
-        return {
-          id: item.userId,
-          listenerId: item.userId,
-          name: displayName,
-          rating: Number(item.rating || 0) || 4.8,
-          age: item.age || 28,
-          experience: `${item.experienceYears || 0}+ yrs exp`,
-          quote: item.bio || normalizeHostQuote(displayName),
-          price: `${callRate}/min`,
-          avatar: item.user?.profileImageUrl || avatarPlaceholder,
-          isVerified: true,
-          isOnline: isOnlineHost(item),
-          chatRatePerMinute: chatRate,
-          callRatePerMinute: callRate,
-        };
-      }),
-    [filteredHosts],
-  );
-
-  const displayCards = transformedHosts.slice(0, 6);
-  const verifiedStories = transformedHosts.slice(0, 8);
-  const recentContacts = transformedHosts.slice(0, 5);
-
-  const syncStatus = useMemo(() => {
-    if (hostsQuery.isError) {
-      return 'OFFLINE';
+  useEffect(() => {
+    if (typeof walletQuery.data?.balance === 'number') {
+      setCurrentBalance(walletQuery.data.balance);
     }
+  }, [setCurrentBalance, walletQuery.data?.balance]);
 
-    if (hostsQuery.isFetching || walletQuery.isFetching) {
-      return 'SYNCING';
-    }
+  const hosts = useMemo(() => (hostsQuery.data?.items || []).filter((item) => {
+    const visibility = up(item?.visibility || item?.profileVisibility);
+    const status = up(item?.status || item?.accountStatus || item?.user?.status);
+    const verification = up(item?.verificationStatus);
+    return item?.isVisible !== false && item?.isEnabled !== false && !['HIDDEN', 'DELETED'].includes(visibility) && !['BLOCKED', 'SUSPENDED', 'DELETED', 'INACTIVE'].includes(status) && (!verification || verification === 'VERIFIED');
+  }).map((item) => {
+    const callRate = Number(item.callRatePerMinute || 0);
+    return {
+      id: item.userId,
+      listenerId: item.userId,
+      name: item.user?.displayName || 'Support Host',
+      rating: Number(item.rating || 0) || 4.8,
+      experience: `${item.experienceYears || 0}+ yrs exp`,
+      quote: item.bio || `A safe and private support space with ${item.user?.displayName || 'this host'}.`,
+      price: `${callRate}/min`,
+      avatar: item.user?.profileImageUrl || avatarPlaceholder,
+      isOnline: up(item.availability) === 'ONLINE',
+      chatRatePerMinute: Number(item.chatRatePerMinute || callRate),
+      callRatePerMinute: callRate,
+    };
+  }), [hostsQuery.data?.items]);
 
-    if (socketConnected) {
-      return 'ACTIVE';
-    }
-
-    return 'SYNCING';
-  }, [hostsQuery.isError, hostsQuery.isFetching, socketConnected, walletQuery.isFetching]);
-
-  const syncLabelByState = {
-    ACTIVE: 'ACTIVE',
-    SYNCING: 'SYNCING',
-    OFFLINE: 'OFFLINE',
-  };
-
-  const syncSubtitleByState = {
-    ACTIVE: 'Live admin updates are active',
-    SYNCING: 'Reconnecting and refreshing live data',
-    OFFLINE: 'Unable to load live data. Please try again.',
-  };
-
-  const syncPillStyleByState = {
-    ACTIVE: styles.claimPillActive,
-    SYNCING: styles.claimPillSyncing,
-    OFFLINE: styles.claimPillOffline,
-  };
-
-  const onRetry = useCallback(() => {
-    refreshLiveData();
-  }, [refreshLiveData]);
+  const syncUi = {
+    connected: { title: 'LIVE SYNC ON', subtitle: 'Connected and updating live data', button: 'LIVE', helper: '', pill: styles.livePill },
+    reconnecting: { title: 'LIVE SYNC RECONNECTING', subtitle: 'Trying to restore live data', button: 'SYNCING', helper: 'Trying to restore live data', pill: styles.syncingPill },
+    disconnected: { title: 'LIVE SYNC OFF', subtitle: 'Live updates are temporarily unavailable', button: 'RETRY', helper: 'Live updates are temporarily unavailable', pill: styles.retryPill },
+  }[socketState === SYNC.connected ? 'connected' : socketState === SYNC.reconnecting ? 'reconnecting' : 'disconnected'];
 
   const validateHostAvailability = useCallback(async (listenerId) => {
     const availability = await fetchHostAvailability(listenerId);
-    const hostOnline = toUpper(availability?.availability) === 'ONLINE';
-    const hostVisible = availability?.isVisible !== false;
-    const hostEnabled = availability?.isEnabled !== false;
-
-    if (!hostOnline || !hostVisible || !hostEnabled) {
-      const validationError = new Error(
-        availability?.message || 'This host is currently unavailable.',
-      );
-      validationError.code = 'HOST_UNAVAILABLE';
-      throw validationError;
+    if (up(availability?.availability) !== 'ONLINE' || availability?.isVisible === false || availability?.isEnabled === false) {
+      throw new Error(availability?.message || 'This host is currently unavailable.');
     }
   }, []);
 
-  const handleTalkNow = async (host) => {
-    if (!session?.accessToken) {
-      Alert.alert('Login required', 'Please verify your number to start a call.');
-      return;
-    }
-
+  const openCall = async (host) => {
+    if (!session?.accessToken) return resetToAuthEntry();
     try {
       await validateHostAvailability(host.listenerId);
+
+      const permissionResult = await requestCallAudioPermissions();
+      console.log('[Call] microphone permission preflight', {
+        granted: permissionResult?.granted === true,
+        permissions: permissionResult?.permissions || null,
+        source: 'HomeScreen.openCall',
+      });
+      if (!permissionResult?.granted) {
+        Alert.alert(
+          'Microphone permission needed',
+          'Enable microphone permission to start a voice call.',
+        );
+        return;
+      }
+
       const callPayload = await requestCall(host.listenerId);
       await refreshLiveData();
-      navigation.navigate('CallSession', {
-        callPayload,
-        host,
-      });
-    } catch (apiError) {
-      const message =
-        apiError?.response?.data?.message ||
-        apiError?.message ||
-        'This host is currently unavailable.';
-      Alert.alert('Unable to start call', message);
-      refreshLiveData();
+      navigation.navigate('CallSession', { callPayload, host });
+    } catch (error) {
+      if (!isUnauthorizedApiError(error)) Alert.alert('Unable to start call', error?.response?.data?.message || error?.message || 'This host is currently unavailable.');
     }
   };
 
-  const handleChatNow = async (host) => {
-    if (!session?.accessToken) {
-      Alert.alert('Login required', 'Please verify your number to start a chat.');
+  const openChat = async (host) => {
+    if (!session?.accessToken) return resetToAuthEntry();
+    try {
+      await validateHostAvailability(host.listenerId);
+
+      // Prefer resuming an already-active chat session so history is preserved.
+      const cachedInbox = queryClient.getQueryData(
+        queryKeys.sessions.inbox(session?.user?.role || 'user'),
+      );
+      const cachedActiveSession = (cachedInbox || []).find(
+        (item) =>
+          item?.type === 'chat' &&
+          String(item?.session?.status || '').toUpperCase() === 'ACTIVE' &&
+          String(item?.session?.listenerId || '') === String(host.listenerId),
+      )?.session;
+
+      if (cachedActiveSession?.id) {
+        navigation.navigate('ChatSession', { chatPayload: { session: cachedActiveSession, agora: null }, host });
+        return;
+      }
+
+      let existingActive = null;
+      try {
+        const sessions = await getChatSessions({ page: 1, limit: 25, status: 'ACTIVE' });
+        existingActive = (sessions?.items || []).find(
+          (item) => String(item?.listenerId || '') === String(host.listenerId),
+        );
+      } catch (_error) {}
+
+      if (existingActive?.id) {
+        navigation.navigate('ChatSession', { chatPayload: { session: existingActive, agora: null }, host });
+        return;
+      }
+
+      const chatPayload = await requestChat(host.listenerId);
+      await refreshLiveData();
+      navigation.navigate('ChatSession', { chatPayload, host });
+    } catch (error) {
+      if (!isUnauthorizedApiError(error)) Alert.alert('Unable to start chat', error?.response?.data?.message || error?.message || 'This host is currently unavailable.');
+    }
+  };
+
+  const openInboxItem = (item) => {
+    if (!session?.accessToken) return resetToAuthEntry();
+    const host = { name: item?.participant?.name || 'Conversation', avatar: img(item?.participant?.profileImageUrl), listenerId: item?.session?.listenerId || null, userId: item?.participant?.id || null, isOnline: up(item?.status) === 'ACTIVE' };
+    if (item?.type === 'chat') return navigation.navigate('ChatSession', { chatPayload: { session: item.session, agora: null }, host });
+    if (up(item?.status) === 'ENDED') return Alert.alert('Call ended', 'This call is no longer active.');
+    navigation.navigate('CallSession', { callPayload: { session: item.session, agora: null }, host });
+  };
+
+  const openWallet = () => {
+    const parentNavigation = navigation.getParent();
+    console.log('[Wallet] wallet icon press', {
+      from: 'Home',
+      route: 'MyWallet',
+      balance: walletQuery.data?.balance ?? currentBalance ?? 0,
+    });
+
+    if (parentNavigation) {
+      console.log('[Wallet] route navigation', {
+        from: 'Home',
+        to: 'MyWallet',
+      });
+      parentNavigation.navigate('MyWallet');
       return;
     }
 
-    try {
-      await validateHostAvailability(host.listenerId);
-      const chatPayload = await requestChat(host.listenerId);
-      await refreshLiveData();
-      navigation.navigate('ChatSession', {
-        chatPayload,
-        host,
-      });
-    } catch (apiError) {
-      const message =
-        apiError?.response?.data?.message ||
-        apiError?.message ||
-        'This host is currently unavailable.';
-      Alert.alert('Unable to start chat', message);
-      refreshLiveData();
-    }
+    navigation.navigate('MyWallet');
   };
 
   return (
     <LinearGradient colors={['#04020C', '#0A0312', '#1B0623']} style={styles.container}>
       <StatusBar style="light" />
       <SafeAreaView style={styles.safeArea}>
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scrollContent}
-          refreshControl={
-            <RefreshControl
-              refreshing={hostsQuery.isRefetching || walletQuery.isRefetching}
-              onRefresh={refreshLiveData}
-              tintColor="#FF2AA3"
-            />
-          }
-        >
-          <View style={styles.brandRow}>
-            <AppLogo size="sm" />
-          </View>
-
-          <View style={styles.headerRow}>
-            <View style={styles.leftHeader}>
-              <TouchableOpacity
-                style={styles.profileShell}
-                activeOpacity={0.85}
-                onPress={() => navigation.openDrawer()}
-              >
-                <Image source={avatarPlaceholder} style={styles.profileAvatar} />
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={hostsQuery.isRefetching || walletQuery.isRefetching || inboxQuery.isRefetching} onRefresh={refreshLiveData} tintColor="#FF2AA3" />}>
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <TouchableOpacity style={styles.avatarShell} activeOpacity={0.85} onPress={() => navigation.openDrawer()}>
+                <Image source={avatarPlaceholder} style={styles.avatar} />
               </TouchableOpacity>
-
-              <View style={styles.headerTextWrap}>
+              <View style={styles.headerText}>
                 <Text style={styles.greeting}>Good Evening,</Text>
                 <Text style={styles.heading}>How are you feeling today?</Text>
               </View>
             </View>
-
-            <View style={styles.headerActions}>
-              <TouchableOpacity style={styles.iconButton} activeOpacity={0.8}>
-                <Ionicons name="search" size={20} color={theme.colors.magenta} />
-              </TouchableOpacity>
-              <WalletPill amount={walletBalance} />
+            <View style={styles.headerRight}>
+              <TouchableOpacity style={styles.iconBtn} activeOpacity={0.8}><Ionicons name="search" size={20} color={theme.colors.magenta} /></TouchableOpacity>
+              <WalletPill amount={walletQuery.data?.balance ?? currentBalance ?? 0} onPress={openWallet} />
             </View>
           </View>
 
-          <TouchableOpacity
-            style={styles.offerCard}
-            onPress={onRetry}
-            activeOpacity={0.9}
-          >
-            <View>
-              <Text style={styles.offerTitle}>LIVE SYNC ON</Text>
-              <Text style={styles.offerSubtitle}>{syncSubtitleByState[syncStatus]}</Text>
-            </View>
-            <View style={[styles.claimPill, syncPillStyleByState[syncStatus]]}>
-              <Text style={styles.claimText}>{syncLabelByState[syncStatus]}</Text>
-            </View>
-          </TouchableOpacity>
-
-          {syncStatus !== 'ACTIVE' ? (
-            <View style={styles.syncBanner}>
-              <Text style={styles.syncBannerText}>
-                {syncStatus === 'OFFLINE'
-                  ? 'Live sync is offline. Retry after backend is reachable.'
-                  : 'Live sync disconnected. Reconnecting...'}
-              </Text>
+          {session?.isDemoUser ? (
+            <View style={styles.demoBadge}>
+              <Text style={styles.demoBadgeText}>Demo Mode</Text>
             </View>
           ) : null}
 
-          <View style={styles.tabsRow}>
-            {tabs.map((tab) => {
-              const isActive = tab === activeTab;
+          <TouchableOpacity style={styles.syncCard} onPress={() => { if (session?.accessToken && socketState !== SYNC.connected) connectRealtimeSocket(session.accessToken); refreshLiveData(); }} activeOpacity={0.9}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.syncTitle}>{syncUi.title}</Text>
+              <Text style={styles.syncSubtitle}>{syncUi.subtitle}</Text>
+            </View>
+            <View style={[styles.syncPill, syncUi.pill]}><Text style={styles.syncPillText}>{syncUi.button}</Text></View>
+          </TouchableOpacity>
+          {syncUi.helper ? <View style={styles.syncHelper}><Text style={styles.syncHelperText}>{syncUi.helper}</Text></View> : null}
+
+          <View style={styles.tabs}>
+            {TABS.map((tab) => {
+              const active = tab === activeTab;
               return (
-                <TouchableOpacity
-                  key={tab}
-                  onPress={() => setActiveTab(tab)}
-                  style={styles.tabButton}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.tabLabel, isActive && styles.activeTabLabel]}>{tab}</Text>
-                  {isActive ? <View style={styles.activeUnderline} /> : null}
+                <TouchableOpacity key={tab} style={styles.tabBtn} onPress={() => setActiveTab(tab)} activeOpacity={0.8}>
+                  <Text style={[styles.tabText, active && styles.tabTextActive]}>{tab}</Text>
+                  {active ? <View style={styles.tabLine} /> : null}
                 </TouchableOpacity>
               );
             })}
           </View>
 
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.storyRow}
-          >
-            {verifiedStories.map((story) => (
-              <StoryAvatar
-                key={story.id}
-                name={story.name}
-                online={story.isOnline}
-                image={story.avatar}
-                onPress={() => Alert.alert(story.name, 'Host profile preview')}
-              />
-            ))}
-          </ScrollView>
-
-          <SectionTitle title="Recently Contacted" style={styles.sectionSpacing} />
-
-          <View style={styles.recentContactsCard}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {recentContacts.map((contact) => (
-                <TouchableOpacity key={contact.id} style={styles.contactItem} activeOpacity={0.85}>
-                  <View style={styles.contactAvatar} />
-                  <Text style={styles.contactName}>{contact.name}</Text>
+          {activeTab === 'Verified' ? (
+            <>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storyRow}>
+                {hosts.slice(0, 8).map((story) => <StoryAvatar key={story.id} name={story.name} online={story.isOnline} image={story.avatar} onPress={() => Alert.alert(story.name, 'Host profile preview')} />)}
+              </ScrollView>
+              <TouchableOpacity style={styles.anonCard} onPress={() => setShowAnonymousModal(true)} activeOpacity={0.9}>
+                <MaterialCommunityIcons name="incognito" size={20} color={theme.colors.magenta} style={{ marginRight: 10 }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.anonTitle}>You are Anonymous</Text>
+                  <Text style={styles.anonSub}>Tap to view your privacy details</Text>
+                </View>
+              </TouchableOpacity>
+              <Text style={styles.sectionTitle}>Available Verified Hosts</Text>
+              {hostsQuery.isLoading && !hostsQuery.data ? <View style={styles.stateCard}><Text style={styles.stateText}>Loading live hosts...</Text></View> : null}
+              {hostsQuery.isError && !hostsQuery.data ? <View style={styles.errorCard}><Text style={styles.errorTitle}>Unable to load live data.</Text><TouchableOpacity style={styles.smallBtn} onPress={refreshLiveData}><Text style={styles.smallBtnText}>Retry</Text></TouchableOpacity></View> : null}
+              {!hostsQuery.isLoading && !hostsQuery.isError && !hosts.length ? <View style={styles.stateCard}><Text style={styles.stateText}>No available hosts right now.</Text></View> : null}
+              {!hostsQuery.isLoading && !hostsQuery.isError ? hosts.slice(0, 6).map((person) => <SupportCard key={person.id} person={person} talkDisabled={!person.isOnline} chatDisabled={!person.isOnline} onTalkPress={() => openCall(person)} onChatPress={() => openChat(person)} />) : null}
+            </>
+          ) : (
+            <View style={styles.inboxWrap}>
+              {inboxQuery.isLoading && !inboxQuery.data ? <View style={styles.stateCard}><Text style={styles.stateText}>Loading your real conversations...</Text></View> : null}
+              {inboxQuery.isError && !inboxQuery.data ? <View style={styles.errorCard}><Text style={styles.errorTitle}>Unable to load inbox.</Text><TouchableOpacity style={styles.smallBtn} onPress={refreshLiveData}><Text style={styles.smallBtnText}>Retry</Text></TouchableOpacity></View> : null}
+              {!inboxQuery.isLoading && !inboxQuery.isError && !(inboxQuery.data || []).length ? <View style={styles.emptyCard}><Text style={styles.emptyTitle}>Start conversation...</Text><Text style={styles.emptySub}>Your real chat and call history will appear here once you connect with a host.</Text></View> : null}
+              {(inboxQuery.data || []).map((item) => (
+                <TouchableOpacity key={item.id} style={styles.inboxRow} activeOpacity={0.88} onPress={() => openInboxItem(item)}>
+                  <View style={styles.inboxAvatarWrap}>
+                    <Image source={img(item?.participant?.profileImageUrl)} style={styles.inboxAvatar} />
+                    <View style={[styles.dot, up(item?.status) === 'ACTIVE' ? styles.dotOn : styles.dotOff]} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.inboxTop}>
+                      <Text style={styles.inboxName} numberOfLines={1}>{item?.participant?.name || 'Conversation'}</Text>
+                      <Text style={styles.inboxTime}>{fmtTime(item?.timestamp)}</Text>
+                    </View>
+                    <View style={styles.inboxBottom}>
+                      <Text style={[styles.inboxPreview, item?.unreadCount ? styles.inboxPreviewUnread : null]} numberOfLines={2}>{item?.preview || 'Start conversation...'}</Text>
+                      {item?.unreadCount ? <View style={styles.badge}><Text style={styles.badgeText}>{item.unreadCount > 9 ? '9+' : item.unreadCount}</Text></View> : <View style={[styles.typePill, item?.type === 'chat' ? styles.chatPill : styles.callPill]}><Text style={styles.typeText}>{item?.type === 'chat' ? 'CHAT' : 'CALL'}</Text></View>}
+                    </View>
+                  </View>
                 </TouchableOpacity>
               ))}
-            </ScrollView>
-          </View>
-
-          <TouchableOpacity
-            style={styles.anonymousBanner}
-            onPress={() => setShowAnonymousModal(true)}
-            activeOpacity={0.9}
-          >
-            <MaterialCommunityIcons
-              name="incognito"
-              size={20}
-              color={theme.colors.magenta}
-              style={styles.anonymousIcon}
-            />
-            <View style={styles.anonymousTextWrap}>
-              <Text style={styles.anonymousTitle}>You are Anonymous</Text>
-              <Text style={styles.anonymousSubtitle}>
-                Tap to view your privacy details
-              </Text>
             </View>
-          </TouchableOpacity>
-
-          <View style={styles.cardsWrap}>
-            {hostsQuery.isLoading && !hostsQuery.data ? (
-              <View style={styles.loadingWrap}>
-                {[1, 2, 3].map((item) => (
-                  <View key={`loading-${item}`} style={styles.loadingCard} />
-                ))}
-              </View>
-            ) : null}
-
-            {hostsQuery.isError && !hostsQuery.data ? (
-              <View style={styles.errorCard}>
-                <Text style={styles.errorTitle}>Unable to load live data.</Text>
-                <Text style={styles.errorSubtitle}>Please try again.</Text>
-                <TouchableOpacity
-                  style={styles.retryButton}
-                  onPress={onRetry}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.retryText}>Retry</Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
-
-            {!hostsQuery.isLoading && !hostsQuery.isError && displayCards.length === 0 ? (
-              <Text style={styles.emptyStateText}>No available hosts right now.</Text>
-            ) : null}
-
-            {!hostsQuery.isLoading && !hostsQuery.isError
-              ? displayCards.map((person) => (
-                  <SupportCard
-                    key={person.id}
-                    person={person}
-                    talkDisabled={!person.isOnline}
-                    chatDisabled={!person.isOnline}
-                    onTalkPress={() => handleTalkNow(person)}
-                    onChatPress={() => handleChatNow(person)}
-                  />
-                ))
-              : null}
-          </View>
+          )}
         </ScrollView>
       </SafeAreaView>
-
-      <BottomSheetAnonymous
-        visible={showAnonymousModal}
-        onClose={() => setShowAnonymousModal(false)}
-      />
+      <BottomSheetAnonymous visible={showAnonymousModal} onClose={() => setShowAnonymousModal(false)} />
     </LinearGradient>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  safeArea: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 28,
-  },
-  brandRow: {
-    paddingTop: 6,
-    marginBottom: 8,
-    alignItems: 'flex-start',
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  leftHeader: {
-    flexDirection: 'row',
-    flexShrink: 1,
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  profileShell: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 1.5,
-    borderColor: theme.colors.magenta,
-    padding: 2,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  profileAvatar: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 24,
-  },
-  headerTextWrap: {
-    marginLeft: 10,
-    flexShrink: 1,
-  },
-  greeting: {
-    color: theme.colors.textSecondary,
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  heading: {
-    color: theme.colors.textPrimary,
-    fontSize: 17,
-    fontWeight: '700',
-    lineHeight: 22,
-    maxWidth: 132,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  iconButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  offerCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 42, 163, 0.4)',
-    backgroundColor: 'rgba(36, 15, 42, 0.85)',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  offerTitle: {
-    color: theme.colors.textPrimary,
-    fontWeight: '700',
-    fontSize: 16,
-  },
-  offerSubtitle: {
-    color: theme.colors.magenta,
-    fontSize: 12,
-    marginTop: 1,
-  },
-  claimPill: {
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 7,
-  },
-  claimPillActive: {
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255, 35, 159, 0.18)',
-  },
-  claimPillSyncing: {
-    borderColor: 'rgba(255, 184, 0, 0.45)',
-    backgroundColor: 'rgba(255, 184, 0, 0.14)',
-  },
-  claimPillOffline: {
-    borderColor: 'rgba(255, 85, 96, 0.45)',
-    backgroundColor: 'rgba(255, 85, 96, 0.14)',
-  },
-  claimText: {
-    color: theme.colors.textPrimary,
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  syncBanner: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 12,
-  },
-  syncBannerText: {
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-  },
-  tabsRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 18,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.07)',
-    paddingBottom: 8,
-    marginTop: 4,
-  },
-  tabButton: {
-    paddingBottom: 3,
-  },
-  tabLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.h3,
-    fontWeight: '600',
-  },
-  activeTabLabel: {
-    color: theme.colors.textPrimary,
-  },
-  activeUnderline: {
-    marginTop: 6,
-    width: '100%',
-    height: 3,
-    borderRadius: 3,
-    backgroundColor: theme.colors.magenta,
-  },
-  storyRow: {
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  sectionSpacing: {
-    marginTop: 4,
-  },
-  recentContactsCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(35, 30, 46, 0.68)',
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-  },
-  contactItem: {
-    alignItems: 'center',
-    marginHorizontal: 8,
-  },
-  contactAvatar: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: '#D8D8D8',
-  },
-  contactName: {
-    color: theme.colors.textPrimary,
-    fontSize: 14,
-    marginTop: 5,
-  },
-  anonymousBanner: {
-    marginTop: 14,
-    marginBottom: 14,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 42, 163, 0.35)',
-    backgroundColor: 'rgba(33, 15, 41, 0.88)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 13,
-    paddingVertical: 11,
-  },
-  anonymousIcon: {
-    marginRight: 10,
-  },
-  anonymousTextWrap: {
-    flex: 1,
-  },
-  anonymousTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  anonymousSubtitle: {
-    color: theme.colors.textSecondary,
-    marginTop: 1,
-    fontSize: 13,
-  },
-  cardsWrap: {
-    marginTop: 2,
-  },
-  loadingWrap: {
-    gap: 12,
-  },
-  loadingCard: {
-    height: 154,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  errorCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 85, 96, 0.4)',
-    backgroundColor: 'rgba(255, 85, 96, 0.08)',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 12,
-  },
-  errorTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  errorSubtitle: {
-    color: theme.colors.textSecondary,
-    fontSize: 13,
-    marginTop: 4,
-  },
-  retryButton: {
-    alignSelf: 'flex-start',
-    marginTop: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.borderPink,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(255, 42, 163, 0.18)',
-  },
-  retryText: {
-    color: theme.colors.textPrimary,
-    fontWeight: '700',
-    fontSize: 12,
-  },
-  emptyStateText: {
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    marginTop: 20,
-    marginBottom: 18,
-  },
+  container: { flex: 1 }, safeArea: { flex: 1 }, content: { paddingHorizontal: 16, paddingTop: 6, paddingBottom: 28 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 8, marginBottom: 12 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', flexShrink: 1, marginRight: 10 }, headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 }, headerText: { marginLeft: 10, flexShrink: 1 },
+  avatarShell: { width: 48, height: 48, borderRadius: 24, borderWidth: 1.5, borderColor: theme.colors.magenta, padding: 2, backgroundColor: 'rgba(255,255,255,0.08)' }, avatar: { width: '100%', height: '100%', borderRadius: 24 },
+  greeting: { color: theme.colors.textSecondary, fontSize: 15, fontWeight: '500' }, heading: { color: theme.colors.textPrimary, fontSize: 17, fontWeight: '700', lineHeight: 22, maxWidth: 132 },
+  iconBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: theme.colors.borderSoft, alignItems: 'center', justifyContent: 'center' },
+  demoBadge: { alignSelf: 'flex-start', marginBottom: 10, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,42,163,0.3)', backgroundColor: 'rgba(255,42,163,0.12)', paddingHorizontal: 12, paddingVertical: 6 },
+  demoBadgeText: { color: theme.colors.textPrimary, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
+  syncCard: { borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,42,163,0.4)', backgroundColor: 'rgba(36,15,42,0.85)', paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  syncTitle: { color: theme.colors.textPrimary, fontSize: 16, fontWeight: '700' }, syncSubtitle: { color: theme.colors.magenta, fontSize: 12, marginTop: 1 }, syncPill: { borderRadius: 18, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 7 }, syncPillText: { color: theme.colors.textPrimary, fontSize: 13, fontWeight: '700' },
+  livePill: { borderColor: theme.colors.borderPink, backgroundColor: 'rgba(255,35,159,0.18)' }, syncingPill: { borderColor: 'rgba(255,184,0,0.45)', backgroundColor: 'rgba(255,184,0,0.14)' }, retryPill: { borderColor: 'rgba(255,85,96,0.45)', backgroundColor: 'rgba(255,85,96,0.14)' },
+  syncHelper: { borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', backgroundColor: 'rgba(255,255,255,0.05)', paddingHorizontal: 12, paddingVertical: 8, marginBottom: 12 }, syncHelperText: { color: theme.colors.textSecondary, fontSize: 12 },
+  tabs: { flexDirection: 'row', gap: 18, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.07)', paddingBottom: 8, marginTop: 4 }, tabBtn: { paddingBottom: 3 }, tabText: { color: theme.colors.textMuted, fontSize: theme.typography.h3, fontWeight: '600' }, tabTextActive: { color: theme.colors.textPrimary }, tabLine: { marginTop: 6, height: 3, borderRadius: 3, backgroundColor: theme.colors.magenta },
+  storyRow: { paddingTop: 12, paddingBottom: 8 }, anonCard: { marginTop: 8, marginBottom: 14, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,42,163,0.35)', backgroundColor: 'rgba(33,15,41,0.88)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, paddingVertical: 11 }, anonTitle: { color: theme.colors.textPrimary, fontSize: 15, fontWeight: '700' }, anonSub: { color: theme.colors.textSecondary, fontSize: 13, marginTop: 1 },
+  sectionTitle: { color: theme.colors.textPrimary, fontSize: 16, fontWeight: '700', marginBottom: 8 }, stateCard: { borderRadius: 18, borderWidth: 1, borderColor: theme.colors.borderSoft, backgroundColor: 'rgba(255,255,255,0.06)', paddingVertical: 20, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }, stateText: { color: theme.colors.textSecondary, fontSize: 14 },
+  errorCard: { borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,85,96,0.4)', backgroundColor: 'rgba(255,85,96,0.08)', paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }, errorTitle: { color: theme.colors.textPrimary, fontSize: 14, fontWeight: '700' }, smallBtn: { alignSelf: 'flex-start', marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.borderPink, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: 'rgba(255,42,163,0.18)' }, smallBtnText: { color: theme.colors.textPrimary, fontWeight: '700', fontSize: 12 },
+  inboxWrap: { marginTop: 14, gap: 12 }, emptyCard: { borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,42,163,0.25)', backgroundColor: 'rgba(24,13,35,0.92)', paddingHorizontal: 18, paddingVertical: 28 }, emptyTitle: { color: theme.colors.textPrimary, fontSize: 18, fontWeight: '700' }, emptySub: { marginTop: 8, color: theme.colors.textSecondary, fontSize: 13, lineHeight: 20 },
+  inboxRow: { borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(23,13,35,0.96)', paddingHorizontal: 14, paddingVertical: 13, flexDirection: 'row', alignItems: 'center' }, inboxAvatarWrap: { marginRight: 12 }, inboxAvatar: { width: 56, height: 56, borderRadius: 28, borderWidth: 1.5, borderColor: 'rgba(255,42,163,0.55)', backgroundColor: '#2A2137' },
+  dot: { position: 'absolute', right: 1, bottom: 1, width: 12, height: 12, borderRadius: 6, borderWidth: 2, borderColor: '#180B23' }, dotOn: { backgroundColor: theme.colors.success }, dotOff: { backgroundColor: 'rgba(255,255,255,0.26)' },
+  inboxTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }, inboxBottom: { flexDirection: 'row', alignItems: 'center', marginTop: 6 }, inboxName: { flex: 1, color: theme.colors.textPrimary, fontSize: 17, fontWeight: '700' }, inboxTime: { color: theme.colors.textMuted, fontSize: 12, marginTop: 2 }, inboxPreview: { flex: 1, paddingRight: 12, color: theme.colors.textSecondary, fontSize: 13, lineHeight: 18 }, inboxPreviewUnread: { color: theme.colors.textPrimary },
+  badge: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 7, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,42,163,0.92)' }, badgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  typePill: { borderRadius: 11, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 4 }, chatPill: { borderColor: 'rgba(15,214,122,0.35)', backgroundColor: 'rgba(15,214,122,0.12)' }, callPill: { borderColor: 'rgba(255,42,163,0.35)', backgroundColor: 'rgba(255,42,163,0.12)' }, typeText: { color: theme.colors.textPrimary, fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
 });
 
 export default HomeScreen;

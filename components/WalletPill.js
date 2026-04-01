@@ -1,11 +1,21 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
 
-const WalletPill = ({ amount }) => {
+const WalletPill = ({ amount, onPress, style }) => {
+  const Container = onPress ? TouchableOpacity : View;
+
   return (
-    <View style={styles.pill}>
+    <Container
+      style={[styles.pill, style]}
+      {...(onPress
+        ? {
+            activeOpacity: 0.82,
+            onPress,
+          }
+        : {})}
+    >
       <Ionicons
         name="wallet"
         size={14}
@@ -13,7 +23,7 @@ const WalletPill = ({ amount }) => {
         style={styles.icon}
       />
       <Text style={styles.amount}>INR {amount}</Text>
-    </View>
+    </Container>
   );
 };
 

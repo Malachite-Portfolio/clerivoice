@@ -170,33 +170,6 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
       }
     });
 
-    socket.on('chat_accepted', async ({ sessionId }, callback) => {
-      try {
-        const data = await chatService.acceptChat({
-          listenerId: userId,
-          sessionId,
-        });
-
-        callback?.({ success: true, data });
-      } catch (error) {
-        callback?.({ success: false, code: error.code, message: error.message, data: error.data || null });
-      }
-    });
-
-    socket.on('chat_rejected', async ({ sessionId, reason }, callback) => {
-      try {
-        const data = await chatService.rejectChat({
-          listenerId: userId,
-          sessionId,
-          reason,
-        });
-
-        callback?.({ success: true, data });
-      } catch (error) {
-        callback?.({ success: false, code: error.code, message: error.message, data: error.data || null });
-      }
-    });
-
     socket.on('chat_message', async ({ sessionId, receiverId, content, messageType }, callback) => {
       try {
         const data = await chatService.sendMessage({
@@ -211,6 +184,18 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
       } catch (error) {
         callback?.({ success: false, code: error.code, message: error.message, data: error.data || null });
       }
+    });
+
+    socket.on('chat_typing', ({ sessionId, isTyping }) => {
+      if (!sessionId) {
+        return;
+      }
+
+      socket.to(`session:chat:${sessionId}`).emit('chat_typing', {
+        sessionId,
+        senderId: userId,
+        isTyping: Boolean(isTyping),
+      });
     });
 
     socket.on('chat_read', async ({ sessionId, messageIds }, callback) => {
@@ -292,6 +277,19 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
         });
 
         callback?.({ success: true });
+      } catch (error) {
+        callback?.({ success: false, code: error.code, message: error.message, data: error.data || null });
+      }
+    });
+
+    socket.on('call_media_joined', async ({ sessionId }, callback) => {
+      try {
+        const data = await callService.markCallParticipantJoined({
+          actorId: userId,
+          sessionId,
+        });
+
+        callback?.({ success: true, data });
       } catch (error) {
         callback?.({ success: false, code: error.code, message: error.message, data: error.data || null });
       }

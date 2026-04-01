@@ -15,6 +15,9 @@ const assertValidChannelName = (channelName) => {
 };
 
 const toAgoraUid = (userId) => {
+  // Agora Android SDK expects a positive 32-bit int uid (commonly treated as signed).
+  // Keep UIDs within 1..2,147,483,647 to avoid native overflow issues that can surface as join rejections.
+  const MAX_SAFE_AGORA_UID = 2147483647;
   const raw = String(userId || '').trim();
   if (!raw) {
     throw new AppError('Invalid Agora user id', 400, 'INVALID_AGORA_UID');
@@ -23,13 +26,19 @@ const toAgoraUid = (userId) => {
   if (/^\d+$/.test(raw)) {
     const numeric = Number(raw);
     if (Number.isFinite(numeric) && numeric > 0) {
-      return numeric;
+      const bounded = numeric % MAX_SAFE_AGORA_UID;
+      return bounded > 0 ? bounded : 1;
     }
   }
 
   const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8);
   const hashed = Number.parseInt(digest, 16);
-  return Number.isFinite(hashed) && hashed > 0 ? hashed : 1;
+  if (!Number.isFinite(hashed)) {
+    return 1;
+  }
+
+  const bounded = hashed % MAX_SAFE_AGORA_UID;
+  return bounded > 0 ? bounded : 1;
 };
 
 const mapRtcRole = (role) => {

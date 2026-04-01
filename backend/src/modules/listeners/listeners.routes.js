@@ -8,6 +8,18 @@ const { listListenersQuerySchema, updateAvailabilitySchema } = require('./listen
 const router = express.Router();
 
 router.get('/', validate(listListenersQuerySchema, 'query'), controller.getListeners);
+router.get(
+  '/me/dashboard',
+  authMiddleware,
+  allowRoles('LISTENER', 'ADMIN'),
+  controller.getMyDashboard
+);
+router.get(
+  '/me/availability',
+  authMiddleware,
+  allowRoles('LISTENER', 'ADMIN'),
+  controller.getMyAvailability
+);
 router.post(
   '/me/availability',
   authMiddleware,

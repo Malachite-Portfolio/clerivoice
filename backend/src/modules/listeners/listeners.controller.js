@@ -27,6 +27,21 @@ const getAvailability = asyncHandler(async (req, res) => {
   return successResponse(res, data);
 });
 
+const getMyAvailability = asyncHandler(async (req, res) => {
+  const data = await listenerService.getListenerAvailability(req.user.id);
+
+  if (!data) {
+    return errorResponse(res, 'Listener not found', 'LISTENER_NOT_FOUND', StatusCodes.NOT_FOUND);
+  }
+
+  return successResponse(res, data);
+});
+
+const getMyDashboard = asyncHandler(async (req, res) => {
+  const data = await listenerService.getListenerDashboard(req.user.id);
+  return successResponse(res, data);
+});
+
 const updateMyAvailability = asyncHandler(async (req, res) => {
   const data = await listenerService.updateListenerAvailability({
     listenerId: req.user.id,
@@ -40,5 +55,7 @@ module.exports = {
   getListeners,
   getListener,
   getAvailability,
+  getMyAvailability,
+  getMyDashboard,
   updateMyAvailability,
 };

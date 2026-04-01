@@ -70,6 +70,15 @@ const getCallSessions = asyncHandler(async (req, res) => {
   return successResponse(res, data);
 });
 
+const getCallSession = asyncHandler(async (req, res) => {
+  const data = await callService.getCallSession({
+    actorId: req.user.id,
+    sessionId: req.params.sessionId,
+  });
+
+  return successResponse(res, data);
+});
+
 const refreshCallToken = asyncHandler(async (req, res) => {
   const data = await callService.renewCallToken({
     actorId: req.user.id,
@@ -87,5 +96,6 @@ module.exports = {
   rejectCallDirect,
   endCall,
   getCallSessions,
+  getCallSession,
   refreshCallToken,
 };

@@ -1,7 +1,9 @@
 const dayjs = require('dayjs');
 const { prisma } = require('../../config/prisma');
+const { logger } = require('../../config/logger');
 const { AppError } = require('../../utils/appError');
 const sessionGuardService = require('../../services/sessionGuard.service');
+const pushNotificationService = require('../../services/pushNotification.service');
 const {
   emitHostStatusChanged,
   emitEvent,
@@ -20,6 +22,15 @@ const setRealtimeDependencies = ({ socketServer, sessionBillingManager }) => {
 };
 
 const getCallChannelName = (sessionId) => agoraService.buildCallChannelName(sessionId);
+
+const emitCallRealtime = (session, eventName, payload) => {
+  if (!io || !session) {
+    return;
+  }
+
+  io.to(`user:${session.userId}`).emit(eventName, payload);
+  io.to(`user:${session.listenerId}`).emit(eventName, payload);
+};
 
 const assertCallParticipant = (session, userId) => {
   if (session.userId !== userId && session.listenerId !== userId) {
@@ -109,10 +120,10 @@ const finalizeCallSession = async ({
 
   if (io) {
     if (reasonCode === 'LOW_BALANCE') {
-      io.to(`session:call:${session.id}`).emit('call_end_due_to_low_balance', payload);
+      emitCallRealtime(session, 'call_end_due_to_low_balance', payload);
     }
-    io.to(`session:call:${session.id}`).emit('call_ended', payload);
-    io.to(`session:call:${session.id}`).emit('session_ended', {
+    emitCallRealtime(session, 'call_ended', payload);
+    emitCallRealtime(session, 'session_ended', {
       ...payload,
       sessionType: 'call',
     });
@@ -189,6 +200,34 @@ const requestCall = async ({ userId, listenerId }) => {
     });
   }
 
+  Promise.resolve()
+    .then(() =>
+      pushNotificationService.sendIncomingCallPush({
+        listenerId,
+        sessionId: session.id,
+        requesterId: session.user?.id || userId,
+        requesterName: session.user?.displayName || 'Incoming call',
+        requesterAvatar: session.user?.profileImageUrl || null,
+        ratePerMinute: Number(session.ratePerMinute),
+        requestedAt: session.requestedAt?.toISOString?.() || new Date().toISOString(),
+      })
+    )
+    .catch((error) => {
+      logger.warn('[Push] incoming call notification failed', {
+        sessionId: session.id,
+        listenerId,
+        message: error?.message || 'Unknown error',
+      });
+    });
+
+  logger.info('[Call] request created', {
+    sessionId: session.id,
+    userId,
+    listenerId,
+    channelName,
+    status: session.status,
+  });
+
   return {
     session: {
       ...session,
@@ -236,13 +275,10 @@ const acceptCall = async ({ listenerId, sessionId }) => {
     throw error;
   }
 
-  const now = new Date();
   const updated = await prisma.callSession.update({
     where: { id: sessionId },
     data: {
-      status: 'ACTIVE',
-      startedAt: now,
-      answeredAt: now,
+      status: 'RINGING',
     },
   });
 
@@ -260,10 +296,6 @@ const acceptCall = async ({ listenerId, sessionId }) => {
     reason: 'CALL_ACTIVE',
   });
 
-  if (billingManager) {
-    billingManager.startCallBilling(sessionId);
-  }
-
   const channelName = getCallChannelName(sessionId);
   const listenerAgora = agoraService.generateRtcToken({
     userId: listenerId,
@@ -271,20 +303,30 @@ const acceptCall = async ({ listenerId, sessionId }) => {
     role: 'publisher',
   });
 
-  if (io) {
-    io.to(`session:call:${sessionId}`).emit('call_accepted', {
+  await prisma.callEvent.create({
+    data: {
       sessionId,
-      channelName,
-      status: updated.status,
-      answeredAt: updated.answeredAt,
-    });
+      eventType: 'call_accepted',
+      payload: {
+        listenerId,
+        channelName,
+      },
+    },
+  });
 
-    io.to(`session:call:${sessionId}`).emit('call_started', {
-      sessionId,
-      channelName,
-      startedAt: updated.startedAt,
-    });
-  }
+  emitCallRealtime(session, 'call_accepted', {
+    sessionId,
+    channelName,
+    status: updated.status,
+  });
+
+  logger.info('[Call] accepted', {
+    sessionId,
+    listenerId,
+    userId: session.userId,
+    channelName,
+    status: updated.status,
+  });
 
   return {
     session: {
@@ -322,12 +364,10 @@ const rejectCall = async ({ listenerId, sessionId, reason }) => {
     },
   });
 
-  if (io) {
-    io.to(`session:call:${sessionId}`).emit('call_rejected', {
-      sessionId,
-      reason: reason || 'Call rejected by listener',
-    });
-  }
+  emitCallRealtime(session, 'call_rejected', {
+    sessionId,
+    reason: reason || 'Call rejected by listener',
+  });
 
   return updated;
 };
@@ -397,6 +437,184 @@ const renewCallToken = async ({ actorId, sessionId }) => {
     sessionId,
     channelName,
     agora,
+  };
+};
+
+const markCallParticipantJoined = async ({ actorId, sessionId }) => {
+  const session = await prisma.callSession.findUnique({ where: { id: sessionId } });
+  if (!session) {
+    throw new AppError('Call session not found', 404, 'CALL_SESSION_NOT_FOUND');
+  }
+
+  assertCallParticipant(session, actorId);
+
+  if (FINAL_CALL_STATES.has(session.status)) {
+    throw new AppError('Call session is already ended', 400, 'CALL_ALREADY_ENDED');
+  }
+
+  const eventType = `call_media_joined:${actorId}`;
+  const existingEvent = await prisma.callEvent.findFirst({
+    where: {
+      sessionId,
+      eventType,
+    },
+  });
+
+  if (!existingEvent) {
+    await prisma.callEvent.create({
+      data: {
+        sessionId,
+        eventType,
+        payload: {
+          actorId,
+          joinedAt: new Date().toISOString(),
+        },
+      },
+    });
+  }
+
+  const joinedActors = new Set(
+    (
+      await prisma.callEvent.findMany({
+        where: {
+          sessionId,
+          eventType: {
+            in: [
+              `call_media_joined:${session.userId}`,
+              `call_media_joined:${session.listenerId}`,
+            ],
+          },
+        },
+        select: {
+          eventType: true,
+        },
+      })
+    ).map((item) => item.eventType.replace('call_media_joined:', ''))
+  );
+
+  logger.info('[Call] media joined', {
+    sessionId,
+    actorId,
+    joinedActorIds: Array.from(joinedActors),
+  });
+
+  if (joinedActors.size < 2) {
+    return {
+      connected: false,
+      session: {
+        ...session,
+        channelName: getCallChannelName(session.id),
+      },
+    };
+  }
+
+  const now = new Date();
+  const shouldActivateSession = session.status !== 'ACTIVE';
+  const updatedSession = shouldActivateSession
+    ? await prisma.callSession.update({
+        where: { id: sessionId },
+        data: {
+          status: 'ACTIVE',
+          startedAt: session.startedAt || now,
+          answeredAt: session.answeredAt || now,
+        },
+      })
+    : session;
+
+  if (shouldActivateSession) {
+    if (billingManager) {
+      billingManager.startCallBilling(sessionId, { runImmediately: true });
+    }
+
+    emitCallRealtime(updatedSession, 'call_started', {
+      sessionId,
+      channelName: getCallChannelName(sessionId),
+      status: 'ACTIVE',
+      startedAt: updatedSession.startedAt,
+      answeredAt: updatedSession.answeredAt,
+    });
+  }
+
+  return {
+    connected: true,
+    session: {
+      ...updatedSession,
+      channelName: getCallChannelName(updatedSession.id),
+    },
+  };
+};
+
+const getCallSession = async ({ actorId, sessionId }) => {
+  const session = await prisma.callSession.findUnique({
+    where: { id: sessionId },
+    include: {
+      user: {
+        select: {
+          id: true,
+          displayName: true,
+          profileImageUrl: true,
+          phone: true,
+        },
+      },
+      listener: {
+        select: {
+          id: true,
+          displayName: true,
+          profileImageUrl: true,
+        },
+      },
+    },
+  });
+
+  if (!session) {
+    throw new AppError('Call session not found', 404, 'CALL_SESSION_NOT_FOUND');
+  }
+
+  assertCallParticipant(session, actorId);
+
+  const joinedEventTypes = [
+    `call_media_joined:${session.userId}`,
+    `call_media_joined:${session.listenerId}`,
+  ];
+
+  const events = await prisma.callEvent.findMany({
+    where: {
+      sessionId,
+      eventType: {
+        in: ['call_accepted', 'call_rejected', ...joinedEventTypes],
+      },
+    },
+    orderBy: {
+      createdAt: 'asc',
+    },
+    select: {
+      eventType: true,
+      createdAt: true,
+    },
+  });
+
+  const acceptedEvent = events.find((event) => event.eventType === 'call_accepted') || null;
+  const rejectedEvent = events.find((event) => event.eventType === 'call_rejected') || null;
+  const joinedActorIds = events
+    .filter((event) => event.eventType.startsWith('call_media_joined:'))
+    .map((event) => event.eventType.replace('call_media_joined:', ''));
+
+  return {
+    session: {
+      ...session,
+      channelName: getCallChannelName(session.id),
+    },
+    realtime: {
+      isAccepted: Boolean(acceptedEvent) || session.status === 'ACTIVE',
+      acceptedAt: acceptedEvent?.createdAt || null,
+      isRejected:
+        Boolean(rejectedEvent) ||
+        ['REJECTED', 'CANCELLED', 'MISSED', 'ENDED'].includes(session.status),
+      rejectedAt: rejectedEvent?.createdAt || null,
+      joinedActorIds,
+      hasUserJoinedMedia: joinedActorIds.includes(session.userId),
+      hasListenerJoinedMedia: joinedActorIds.includes(session.listenerId),
+    },
   };
 };
 
@@ -493,6 +711,8 @@ module.exports = {
   endCall,
   forceEndCallBySystem,
   renewCallToken,
+  markCallParticipantJoined,
+  getCallSession,
   listCallSessions,
   storeSignal,
   emitLowBalanceEnded,

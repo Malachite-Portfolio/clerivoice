@@ -17,10 +17,12 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { resetToAuthEntry } from '../navigation/navigationRef';
+import { isUnauthorizedApiError } from '../services/apiClient';
 import { fetchHostAvailability, fetchHosts } from '../services/listenersApi';
-import { getWalletSummary, requestCall, requestChat } from '../services/sessionApi';
+import { getChatSessions, getWalletSummary, requestCall, requestChat } from '../services/sessionApi';
 import { queryKeys } from '../services/queryClient';
-import AppLogo from '../components/AppLogo';
+import { requestCallAudioPermissions } from '../services/audioPermissions';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 
@@ -116,16 +118,35 @@ const ChatCallHubScreen = ({ navigation }) => {
 
   const openCall = async (host) => {
     if (!session?.accessToken) {
-      Alert.alert('Login required', 'Please login with OTP before starting a call.');
+      resetToAuthEntry();
       return;
     }
 
     try {
       await validateHostAvailability(host.listenerId);
+
+      const permissionResult = await requestCallAudioPermissions();
+      console.log('[Call] microphone permission preflight', {
+        granted: permissionResult?.granted === true,
+        permissions: permissionResult?.permissions || null,
+        source: 'ChatCallHubScreen.openCall',
+      });
+      if (!permissionResult?.granted) {
+        Alert.alert(
+          'Microphone permission needed',
+          'Enable microphone permission to start a voice call.',
+        );
+        return;
+      }
+
       const callPayload = await requestCall(host.listenerId);
       await refreshLiveData();
       navigation.navigate('CallSession', { callPayload, host });
     } catch (error) {
+      if (isUnauthorizedApiError(error)) {
+        return;
+      }
+
       const message =
         error?.response?.data?.message || error?.message || 'Unable to start call.';
       Alert.alert('Call blocked', message);
@@ -135,16 +156,35 @@ const ChatCallHubScreen = ({ navigation }) => {
 
   const openChat = async (host) => {
     if (!session?.accessToken) {
-      Alert.alert('Login required', 'Please login with OTP before starting a chat.');
+      resetToAuthEntry();
       return;
     }
 
     try {
       await validateHostAvailability(host.listenerId);
+
+      let existingActive = null;
+      try {
+        const sessions = await getChatSessions({ page: 1, limit: 25, status: 'ACTIVE' });
+        existingActive = (sessions?.items || []).find(
+          (item) => String(item?.listenerId || '') === String(host.listenerId),
+        );
+      } catch (_error) {}
+
+      if (existingActive?.id) {
+        navigation.navigate('ChatSession', { chatPayload: { session: existingActive, agora: null }, host });
+        await refreshLiveData();
+        return;
+      }
+
       const chatPayload = await requestChat(host.listenerId);
       await refreshLiveData();
       navigation.navigate('ChatSession', { chatPayload, host });
     } catch (error) {
+      if (isUnauthorizedApiError(error)) {
+        return;
+      }
+
       const message =
         error?.response?.data?.message || error?.message || 'Unable to start chat.';
       Alert.alert('Chat blocked', message);
@@ -175,7 +215,6 @@ const ChatCallHubScreen = ({ navigation }) => {
             </TouchableOpacity>
 
             <View style={styles.headerCenter}>
-              <AppLogo size="xs" withCard={false} />
               <Text style={styles.headerTitle}>Chat & Call</Text>
             </View>
 
@@ -298,7 +337,6 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: 18,
     fontWeight: '700',
-    marginTop: 3,
   },
   iconButton: {
     width: 40,

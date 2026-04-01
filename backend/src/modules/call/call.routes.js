@@ -50,5 +50,6 @@ router.post(
   controller.refreshCallToken
 );
 router.get('/sessions', authMiddleware, controller.getCallSessions);
+router.get('/sessions/:sessionId', authMiddleware, controller.getCallSession);
 
 module.exports = router;

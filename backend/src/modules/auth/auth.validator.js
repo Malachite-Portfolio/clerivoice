@@ -20,6 +20,8 @@ const verifyOtpSchema = z.object({
 });
 
 const loginUserSchema = verifyOtpSchema;
+const listenerSendOtpSchema = sendOtpSchema;
+const listenerVerifyOtpSchema = verifyOtpSchema;
 
 const loginSchema = z
   .object({
@@ -87,6 +89,8 @@ module.exports = {
   sendOtpSchema,
   verifyOtpSchema,
   loginUserSchema,
+  listenerSendOtpSchema,
+  listenerVerifyOtpSchema,
   loginSchema,
   loginListenerSchema,
   refreshSchema,

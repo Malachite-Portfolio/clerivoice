@@ -5,7 +5,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
-import AppLogo from '../components/AppLogo';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 
@@ -15,8 +14,6 @@ const ProfileScreen = () => {
   return (
     <LinearGradient colors={theme.gradients.bg} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        <AppLogo size="md" style={styles.logo} />
-
         <View style={styles.card}>
           <Image source={avatarPlaceholder} style={styles.avatar} />
           <Text style={styles.name}>{session?.user?.displayName || 'Anonymous'}</Text>
@@ -48,10 +45,6 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
     justifyContent: 'center',
-  },
-  logo: {
-    alignSelf: 'center',
-    marginBottom: 16,
   },
   card: {
     borderRadius: 24,

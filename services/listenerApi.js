@@ -8,6 +8,11 @@ export const updateMyAvailability = async (availability) => {
   return response.data.data;
 };
 
+export const fetchListenerDashboard = async () => {
+  const response = await apiClient.get(API_ENDPOINTS.listeners.dashboard);
+  return response.data.data;
+};
+
 export const acceptCallRequest = async (sessionId) => {
   const response = await apiClient.post(API_ENDPOINTS.call.accept, { sessionId });
   return response.data.data;
@@ -15,16 +20,6 @@ export const acceptCallRequest = async (sessionId) => {
 
 export const rejectCallRequest = async (sessionId, reason) => {
   const response = await apiClient.post(API_ENDPOINTS.call.reject, { sessionId, reason });
-  return response.data.data;
-};
-
-export const acceptChatRequest = async (sessionId) => {
-  const response = await apiClient.post(API_ENDPOINTS.chat.accept, { sessionId });
-  return response.data.data;
-};
-
-export const rejectChatRequest = async (sessionId, reason) => {
-  const response = await apiClient.post(API_ENDPOINTS.chat.reject, { sessionId, reason });
   return response.data.data;
 };
 

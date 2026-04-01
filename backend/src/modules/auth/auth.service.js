@@ -26,11 +26,58 @@ const parseExpiryToDate = (expiresIn) => {
   return dayjs().add(value, unitMap[unit]).toDate();
 };
 
-const sanitizePhone = (phone) => phone.replace(/\s+/g, '');
-const isDemoPhone = (phone) =>
-  sanitizePhone(phone) === sanitizePhone(env.DEMO_LOGIN_PHONE);
-const isDemoOtp = (otp) => String(otp) === String(env.DEMO_LOGIN_OTP);
-const DEMO_BYPASS_OTP = '123456';
+const sanitizePhone = (phone) => String(phone || '').replace(/[\s()-]/g, '').trim();
+const normalizePhone = (phone) => {
+  const sanitized = sanitizePhone(phone);
+  const digits = sanitized.replace(/\D/g, '');
+
+  if (!digits) {
+    return '';
+  }
+
+  if (digits.length === 10) {
+    return `+91${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return `+91${digits.slice(1)}`;
+  }
+
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return `+${digits}`;
+  }
+
+  if (sanitized.startsWith('+')) {
+    return `+${digits}`;
+  }
+
+  return sanitized;
+};
+const buildPhoneVariants = (phone) => {
+  const normalizedPhone = normalizePhone(phone);
+  const digits = normalizedPhone.replace(/\D/g, '');
+  const variants = new Set();
+
+  if (normalizedPhone) {
+    variants.add(normalizedPhone);
+  }
+
+  if (digits) {
+    variants.add(digits);
+  }
+
+  if (digits.length === 12 && digits.startsWith('91')) {
+    variants.add(digits.slice(2));
+    variants.add(`+${digits}`);
+  }
+
+  if (digits.length === 10) {
+    variants.add(`91${digits}`);
+    variants.add(`+91${digits}`);
+  }
+
+  return [...variants].filter(Boolean);
+};
 const DEMO_LISTENER_ID = '000000101';
 const DEMO_LISTENER_PHONE = '+910000000101';
 const DEMO_LISTENER_PASSWORD = '12345678';
@@ -45,34 +92,158 @@ const maskIdentity = (value) => {
   return `${input.slice(0, 2)}***${input.slice(-2)}`;
 };
 
-const buildDemoAuthResponse = ({ phone }) => {
-  const normalizedPhone = sanitizePhone(phone);
-  const demoUser = {
-    id: `demo_${normalizedPhone.replace('+', '')}`,
-    role: 'USER',
-    phone: normalizedPhone,
-    displayName: `Anonymous-${normalizedPhone.slice(-4)}`,
-    status: 'ACTIVE',
+const parseDelimitedPhoneList = (...values) =>
+  values
+    .flatMap((value) => String(value || '').split(','))
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+const buildAllowedPhoneSet = (primaryPhone, ...extraPhoneLists) => {
+  const values = [primaryPhone, ...parseDelimitedPhoneList(...extraPhoneLists)]
+    .flatMap((value) => buildPhoneVariants(value))
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  return new Set(values);
+};
+
+const isTestAuthEnabled = () => env.ENABLE_TEST_AUTH;
+const getAllowedTestUserPhones = () =>
+  buildAllowedPhoneSet(env.TEST_USER_PHONE, env.TEST_USER_PHONES, env.TEST_USER_NUMBERS);
+const getAllowedTestListenerPhones = () =>
+  buildAllowedPhoneSet(
+    env.TEST_LISTENER_PHONE,
+    env.TEST_LISTENER_PHONES,
+    env.TEST_LISTENER_NUMBERS
+  );
+const isTestUserPhone = (phone) =>
+  getAllowedTestUserPhones().has(normalizePhone(phone)) ||
+  buildPhoneVariants(phone).some((variant) => getAllowedTestUserPhones().has(variant));
+const isTestListenerPhone = (phone) =>
+  getAllowedTestListenerPhones().has(normalizePhone(phone)) ||
+  buildPhoneVariants(phone).some((variant) => getAllowedTestListenerPhones().has(variant));
+const buildMaskedAllowedPhoneList = (role) =>
+  [...(role === 'LISTENER' ? getAllowedTestListenerPhones() : getAllowedTestUserPhones())].map(
+    maskIdentity
+  );
+
+const buildOtpResponse = (metadata = {}) => {
+  const response = {
+    otpSent: true,
+    expiresInSeconds: env.OTP_EXPIRY_MINUTES * 60,
   };
 
-  const accessToken = signAccessToken({
-    sub: demoUser.id,
-    role: demoUser.role,
-    phone: demoUser.phone,
+  if (env.NODE_ENV !== 'production' && metadata?.debugOtp) {
+    response.debugOtp = metadata.debugOtp;
+  }
+
+  return response;
+};
+
+const expirePendingOtpRecords = async ({ normalizedPhone, purpose }) => {
+  await prisma.otpCode.updateMany({
+    where: {
+      phone: normalizedPhone,
+      status: 'PENDING',
+      purpose,
+    },
+    data: {
+      status: 'EXPIRED',
+    },
+  });
+};
+
+const createOtpChallenge = async ({ normalizedPhone, purpose, otp, metadata }) => {
+  await expirePendingOtpRecords({ normalizedPhone, purpose });
+
+  const codeHash = await bcrypt.hash(otp, 10);
+  const expiresAt = dayjs().add(env.OTP_EXPIRY_MINUTES, 'minute').toDate();
+
+  const otpRecord = await prisma.otpCode.create({
+    data: {
+      phone: normalizedPhone,
+      codeHash,
+      purpose,
+      expiresAt,
+      status: 'PENDING',
+      ...(metadata ? { metadata } : {}),
+    },
   });
 
-  const refreshToken = signRefreshToken({
-    sub: demoUser.id,
-    sid: `demo_sess_${Date.now()}`,
-    role: demoUser.role,
+  logger.info('[Auth] OTP challenge stored', {
+    phone: maskIdentity(normalizedPhone),
+    purpose,
+    otpRecordId: otpRecord.id,
+    metadataRole: metadata?.role || null,
+    testAuth: metadata?.testAuth === true,
+    expiresAt,
   });
 
-  return {
-    user: demoUser,
-    accessToken,
-    refreshToken,
-    demoMode: true,
-  };
+  return buildOtpResponse({
+    debugOtp: metadata?.testAuth === true ? env.TEST_AUTH_FIXED_OTP : env.DEMO_OTP_MODE ? otp : null,
+  });
+};
+
+const findLatestPendingOtpRecord = async ({ normalizedPhone, purpose }) => {
+  const otpRecord = await prisma.otpCode.findFirst({
+    where: {
+      phone: normalizedPhone,
+      purpose,
+      status: 'PENDING',
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  logger.info('[Auth] OTP lookup result', {
+    phone: maskIdentity(normalizedPhone),
+    purpose,
+    found: Boolean(otpRecord),
+    status: otpRecord?.status || null,
+    otpRecordId: otpRecord?.id || null,
+  });
+
+  return otpRecord;
+};
+
+const assertOtpRecordIsUsable = async ({ otpRecord }) => {
+  if (!otpRecord) {
+    throw new AppError('OTP not found. Please request a new OTP.', 400, 'OTP_NOT_FOUND');
+  }
+
+  if (otpRecord.expiresAt < new Date()) {
+    await prisma.otpCode.update({
+      where: { id: otpRecord.id },
+      data: { status: 'EXPIRED' },
+    });
+    throw new AppError('OTP has expired', 400, 'OTP_EXPIRED');
+  }
+
+  if (otpRecord.attempts >= env.OTP_MAX_ATTEMPTS) {
+    throw new AppError('OTP attempts exceeded', 429, 'OTP_ATTEMPTS_EXCEEDED');
+  }
+};
+
+const verifyOtpChallenge = async ({ normalizedPhone, purpose, otpRecord, otp }) => {
+  await assertOtpRecordIsUsable({ otpRecord });
+
+  const isMatch = await bcrypt.compare(String(otp || ''), otpRecord.codeHash);
+  logger.info('[Auth] OTP compare result', {
+    phone: maskIdentity(normalizedPhone),
+    purpose,
+    otpRecordId: otpRecord.id,
+    matched: isMatch,
+    attempts: otpRecord.attempts,
+  });
+
+  if (!isMatch) {
+    await prisma.otpCode.update({
+      where: { id: otpRecord.id },
+      data: { attempts: { increment: 1 } },
+    });
+    throw new AppError('Invalid OTP', 400, 'INVALID_OTP');
+  }
+
+  return otpRecord;
 };
 
 const buildDemoListenerAuthResponse = async ({ deviceId, deviceInfo, ipAddress, userAgent }) => {
@@ -201,72 +372,37 @@ const issueTokensForSession = async ({ user, deviceId, deviceInfo, ipAddress, us
 };
 
 const sendOtp = async ({ phone, purpose }) => {
-  const normalizedPhone = sanitizePhone(phone);
+  const normalizedPhone = normalizePhone(phone);
+  const isTestNumber = isTestAuthEnabled() && isTestUserPhone(normalizedPhone);
+  const useLegacyDemoOtp = env.DEMO_OTP_MODE;
   logger.info('[Auth] sendOtp started', {
     phone: maskIdentity(normalizedPhone),
+    incomingPhone: maskIdentity(phone),
+    phoneVariants: buildPhoneVariants(phone).map(maskIdentity),
     purpose,
     demoMode: env.DEMO_OTP_MODE,
+    testAuthEnabled: isTestAuthEnabled(),
+    isTestNumber,
+    allowedTestPhones: buildMaskedAllowedPhoneList('USER'),
   });
 
-  if (env.DEMO_OTP_MODE && isDemoPhone(normalizedPhone)) {
-    const response = {
-      otpSent: true,
-      expiresInSeconds: env.OTP_EXPIRY_MINUTES * 60,
-    };
-    if (env.NODE_ENV !== 'production') {
-      response.demoOtp = env.DEMO_LOGIN_OTP;
-    }
-    logger.info('[Auth] sendOtp demo response prepared', {
-      phone: maskIdentity(normalizedPhone),
-      expiresInSeconds: response.expiresInSeconds,
-    });
-    return response;
-  }
+  const otp = isTestNumber
+    ? env.TEST_AUTH_FIXED_OTP
+    : useLegacyDemoOtp
+      ? env.DEMO_OTP_CODE
+      : String(Math.floor(100000 + Math.random() * 900000));
 
-  await prisma.otpCode.updateMany({
-    where: {
-      phone: normalizedPhone,
-      status: 'PENDING',
-      purpose,
-    },
-    data: {
-      status: 'EXPIRED',
-    },
-  });
-
-  const otp = env.DEMO_OTP_MODE
-    ? env.DEMO_OTP_CODE
-    : String(Math.floor(100000 + Math.random() * 900000));
-
-  const codeHash = await bcrypt.hash(otp, 10);
-
-  const expiresAt = dayjs().add(env.OTP_EXPIRY_MINUTES, 'minute').toDate();
-
-  await prisma.otpCode.create({
-    data: {
-      phone: normalizedPhone,
-      codeHash,
-      purpose,
-      expiresAt,
-      status: 'PENDING',
-    },
-  });
-
-  const response = {
-    otpSent: true,
-    expiresInSeconds: env.OTP_EXPIRY_MINUTES * 60,
-  };
-
-  if (env.DEMO_OTP_MODE && env.NODE_ENV !== 'production') {
-    response.demoOtp = otp;
-  }
-
-  logger.info('[Auth] sendOtp stored OTP record', {
-    phone: maskIdentity(normalizedPhone),
+  return createOtpChallenge({
+    normalizedPhone,
     purpose,
-    expiresAt,
+    otp,
+    metadata:
+      isTestNumber
+        ? { role: 'USER', testAuth: true }
+        : useLegacyDemoOtp
+          ? { role: 'USER', legacyDemoOtp: true }
+          : null,
   });
-  return response;
 };
 
 const ensureReferralCode = async (userId, tx = prisma) => {
@@ -355,6 +491,100 @@ const upsertOtpUser = async ({ normalizedPhone, displayName, otpRecordId }) => {
   });
 };
 
+const upsertOtpListenerUser = async ({ normalizedPhone, otpRecordId }) => {
+  return prisma.$transaction(async (tx) => {
+    let listenerUser = await tx.user.findUnique({
+      where: { phone: normalizedPhone },
+      include: {
+        listenerProfile: true,
+      },
+    });
+
+    if (!listenerUser) {
+      listenerUser = await tx.user.create({
+        data: {
+          phone: normalizedPhone,
+          displayName: env.TEST_LISTENER_DISPLAY_NAME,
+          role: 'LISTENER',
+          status: 'ACTIVE',
+          isPhoneVerified: true,
+        },
+        include: {
+          listenerProfile: true,
+        },
+      });
+    } else if (
+      listenerUser.role !== 'LISTENER' ||
+      listenerUser.status !== 'ACTIVE' ||
+      listenerUser.deletedAt ||
+      !listenerUser.isPhoneVerified
+    ) {
+      listenerUser = await tx.user.update({
+        where: { id: listenerUser.id },
+        data: {
+          role: 'LISTENER',
+          status: 'ACTIVE',
+          displayName: listenerUser.displayName || env.TEST_LISTENER_DISPLAY_NAME,
+          isPhoneVerified: true,
+          deletedAt: null,
+        },
+        include: {
+          listenerProfile: true,
+        },
+      });
+    }
+
+    await tx.listenerProfile.upsert({
+      where: { userId: listenerUser.id },
+      update: {
+        availability: 'ONLINE',
+        isEnabled: true,
+      },
+      create: {
+        userId: listenerUser.id,
+        bio: 'Test listener account',
+        rating: 4.9,
+        experienceYears: 3,
+        languages: ['English', 'Hindi'],
+        category: 'Emotional Support',
+        callRatePerMinute: 15,
+        chatRatePerMinute: 10,
+        availability: 'ONLINE',
+        isEnabled: true,
+      },
+    });
+
+    await tx.wallet.upsert({
+      where: { userId: listenerUser.id },
+      update: {},
+      create: {
+        userId: listenerUser.id,
+        currency: 'INR',
+      },
+    });
+
+    if (otpRecordId) {
+      await tx.otpCode.update({
+        where: { id: otpRecordId },
+        data: {
+          status: 'VERIFIED',
+          verifiedAt: new Date(),
+        },
+      });
+    }
+
+    return tx.user.findUnique({
+      where: { id: listenerUser.id },
+      include: {
+        listenerProfile: true,
+      },
+    });
+  }, {
+    maxWait: 10000,
+    timeout: 20000,
+  });
+};
+
 const verifyOtp = async ({
   phone,
   otp,
@@ -366,101 +596,31 @@ const verifyOtp = async ({
   ipAddress,
   userAgent,
 }) => {
-  const normalizedPhone = sanitizePhone(phone);
+  const normalizedPhone = normalizePhone(phone);
+  const isTestNumber = isTestAuthEnabled() && isTestUserPhone(normalizedPhone);
   logger.info('[Auth] verifyOtp started', {
     phone: maskIdentity(normalizedPhone),
+    incomingPhone: maskIdentity(phone),
+    phoneVariants: buildPhoneVariants(phone).map(maskIdentity),
     purpose,
     otpLength: String(otp || '').length,
     hasDisplayName: Boolean(displayName),
     hasReferralCode: Boolean(referralCode),
+    testAuthEnabled: isTestAuthEnabled(),
+    isTestNumber,
+    allowedTestPhones: buildMaskedAllowedPhoneList('USER'),
   });
 
-  if (env.DEMO_USER_OTP_BYPASS && String(otp || '').trim() === DEMO_BYPASS_OTP) {
-    const user = await upsertOtpUser({
-      normalizedPhone,
-      displayName,
-    });
-
-    if (referralCode) {
-      const referralService = require('../referral/referral.service');
-      await referralService.applyReferralCode({
-        referredUserId: user.id,
-        referralCode,
-      });
-    }
-
-    const tokens = await issueTokensForSession({
-      user,
-      deviceId,
-      deviceInfo,
-      ipAddress,
-      userAgent,
-    });
-
-    return {
-      user: {
-        id: user.id,
-        role: user.role,
-        phone: user.phone,
-        displayName: user.displayName,
-        status: user.status,
-      },
-      ...tokens,
-      demoMode: true,
-    };
-  }
-
-  if (env.DEMO_OTP_MODE && isDemoPhone(normalizedPhone) && isDemoOtp(otp)) {
-    return buildDemoAuthResponse({ phone: normalizedPhone });
-  }
-
-  const otpRecord = await prisma.otpCode.findFirst({
-    where: {
-      phone: normalizedPhone,
-      purpose,
-      status: 'PENDING',
-    },
-    orderBy: { createdAt: 'desc' },
-  });
-
-  logger.info('[Auth] verifyOtp lookup result', {
-    phone: maskIdentity(normalizedPhone),
+  const otpRecord = await findLatestPendingOtpRecord({
+    normalizedPhone,
     purpose,
-    found: Boolean(otpRecord),
-    status: otpRecord?.status || null,
   });
-
-  if (!otpRecord) {
-    throw new AppError('OTP not found. Please request a new OTP.', 400, 'OTP_NOT_FOUND');
-  }
-
-  if (otpRecord.expiresAt < new Date()) {
-    await prisma.otpCode.update({
-      where: { id: otpRecord.id },
-      data: { status: 'EXPIRED' },
-    });
-    throw new AppError('OTP has expired', 400, 'OTP_EXPIRED');
-  }
-
-  if (otpRecord.attempts >= env.OTP_MAX_ATTEMPTS) {
-    throw new AppError('OTP attempts exceeded', 429, 'OTP_ATTEMPTS_EXCEEDED');
-  }
-
-  const isMatch = await bcrypt.compare(otp, otpRecord.codeHash);
-  logger.info('[Auth] verifyOtp compare result', {
-    phone: maskIdentity(normalizedPhone),
+  await verifyOtpChallenge({
+    normalizedPhone,
     purpose,
-    matched: isMatch,
-    attempts: otpRecord.attempts,
+    otpRecord,
+    otp,
   });
-
-  if (!isMatch) {
-    await prisma.otpCode.update({
-      where: { id: otpRecord.id },
-      data: { attempts: { increment: 1 } },
-    });
-    throw new AppError('Invalid OTP', 400, 'INVALID_OTP');
-  }
 
   const user = await upsertOtpUser({
     normalizedPhone,
@@ -505,33 +665,119 @@ const loginUserWithOtp = async (payload) => {
     hasOtp: Boolean(String(payload?.otp || '').trim()),
   });
 
-  const demoOtpBypass =
-    String(process.env.DEMO_USER_OTP_BYPASS).toLowerCase() === 'true';
-  const incomingOtp = String(
-    payload?.otp ||
-      payload?.code ||
-      payload?.otpCode ||
-      payload?.verificationCode ||
-      payload?.pin ||
-      ''
-  ).trim();
+  return verifyOtp(payload);
+};
 
-  if (demoOtpBypass && incomingOtp === '123456') {
-    return {
-      user: {
-        id: 'demo-user',
-        phone: payload.phone || 'demo',
-        role: 'USER',
-        status: 'ACTIVE',
-        displayName: 'Demo User',
-      },
-      accessToken: 'demo-token',
-      refreshToken: 'demo-refresh-token',
-      demoMode: true,
-    };
+const sendListenerOtp = async ({ phone, purpose = 'LOGIN' }) => {
+  const normalizedPhone = normalizePhone(phone);
+  const isAllowedTestNumber = isTestAuthEnabled() && isTestListenerPhone(normalizedPhone);
+
+  logger.info('[Auth] sendListenerOtp started', {
+    phone: maskIdentity(normalizedPhone),
+    incomingPhone: maskIdentity(phone),
+    phoneVariants: buildPhoneVariants(phone).map(maskIdentity),
+    purpose,
+    testAuthEnabled: isTestAuthEnabled(),
+    isAllowedTestNumber,
+    allowedTestPhones: buildMaskedAllowedPhoneList('LISTENER'),
+  });
+
+  if (!isAllowedTestNumber) {
+    throw new AppError(
+      'Listener test OTP is not enabled for this phone number.',
+      403,
+      'LISTENER_TEST_AUTH_DISABLED'
+    );
   }
 
-  return verifyOtp(payload);
+  return createOtpChallenge({
+    normalizedPhone,
+    purpose,
+    otp: env.TEST_AUTH_FIXED_OTP,
+    metadata: {
+      role: 'LISTENER',
+      testAuth: true,
+    },
+  });
+};
+
+const verifyListenerOtp = async ({
+  phone,
+  otp,
+  purpose = 'LOGIN',
+  deviceId,
+  deviceInfo,
+  ipAddress,
+  userAgent,
+}) => {
+  const normalizedPhone = normalizePhone(phone);
+  const isAllowedTestNumber = isTestAuthEnabled() && isTestListenerPhone(normalizedPhone);
+
+  logger.info('[Auth] verifyListenerOtp started', {
+    phone: maskIdentity(normalizedPhone),
+    incomingPhone: maskIdentity(phone),
+    phoneVariants: buildPhoneVariants(phone).map(maskIdentity),
+    purpose,
+    otpLength: String(otp || '').length,
+    testAuthEnabled: isTestAuthEnabled(),
+    isAllowedTestNumber,
+    allowedTestPhones: buildMaskedAllowedPhoneList('LISTENER'),
+  });
+
+  if (!isAllowedTestNumber) {
+    throw new AppError(
+      'Listener test OTP is not enabled for this phone number.',
+      403,
+      'LISTENER_TEST_AUTH_DISABLED'
+    );
+  }
+
+  const otpRecord = await findLatestPendingOtpRecord({
+    normalizedPhone,
+    purpose,
+  });
+
+  await verifyOtpChallenge({
+    normalizedPhone,
+    purpose,
+    otpRecord,
+    otp,
+  });
+
+  const listenerUser = await upsertOtpListenerUser({
+    normalizedPhone,
+    otpRecordId: otpRecord.id,
+  });
+
+  if (!listenerUser?.listenerProfile || !listenerUser.listenerProfile.isEnabled) {
+    throw new AppError('Listener profile is unavailable', 403, 'LISTENER_PROFILE_UNAVAILABLE');
+  }
+
+  const tokens = await issueTokensForSession({
+    user: listenerUser,
+    deviceId,
+    deviceInfo,
+    ipAddress,
+    userAgent,
+  });
+
+  return {
+    user: {
+      id: listenerUser.id,
+      phone: listenerUser.phone,
+      email: listenerUser.email,
+      displayName: listenerUser.displayName,
+      role: listenerUser.role,
+      status: listenerUser.status,
+      listenerProfile: {
+        availability: listenerUser.listenerProfile.availability,
+        callRatePerMinute: listenerUser.listenerProfile.callRatePerMinute,
+        chatRatePerMinute: listenerUser.listenerProfile.chatRatePerMinute,
+        isEnabled: listenerUser.listenerProfile.isEnabled,
+      },
+    },
+    ...tokens,
+  };
 };
 
 const loginWithPassword = async ({ phoneOrEmail, password, deviceId, deviceInfo, ipAddress, userAgent }) => {
@@ -548,7 +794,7 @@ const loginWithPassword = async ({ phoneOrEmail, password, deviceId, deviceInfo,
   try {
     user = await prisma.user.findFirst({
       where: {
-        OR: [{ phone: sanitizePhone(normalizedIdentity) }, { email: normalizedEmail }],
+        OR: [{ phone: normalizePhone(normalizedIdentity) }, { email: normalizedEmail }],
       },
     });
   } catch (error) {
@@ -674,7 +920,7 @@ const loginListenerWithPassword = async ({
     listenerUser = await prisma.user.findFirst({
       where: {
         role: 'LISTENER',
-        OR: [{ id: rawIdentity }, { phone: sanitizePhone(rawIdentity) }, { email: normalizedEmail }],
+        OR: [{ id: rawIdentity }, { phone: normalizePhone(rawIdentity) }, { email: normalizedEmail }],
       },
       include: {
         listenerProfile: true,
@@ -887,7 +1133,9 @@ const logout = async ({ refreshToken, userId }) => {
 
 module.exports = {
   sendOtp,
+  sendListenerOtp,
   verifyOtp,
+  verifyListenerOtp,
   loginUserWithOtp,
   loginWithPassword,
   loginListenerWithPassword,

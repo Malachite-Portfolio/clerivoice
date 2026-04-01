@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -12,11 +13,21 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
-import { sendOtp, verifyOtp } from '../services/authApi';
+import { AUTH_DEBUG_ENABLED, ENABLE_TEST_AUTH } from '../constants/api';
+import { sendOtp, verifyOtp } from '../services/userAuthApi';
 import { useAuth } from '../context/AuthContext';
 import AppLogo from '../components/AppLogo';
+import { getHomeRouteName } from '../navigation/navigationRef';
 
 const OTP_LENGTH = 6;
+
+const logOtpDebug = (label, payload) => {
+  if (!AUTH_DEBUG_ENABLED) {
+    return;
+  }
+
+  console.log(`[OtpScreen] ${label}`, payload);
+};
 
 const OtpScreen = ({ navigation, route }) => {
   const phone = route?.params?.phone || '+910000000000';
@@ -73,10 +84,23 @@ const OtpScreen = ({ navigation, route }) => {
     setLoading(true);
     setError('');
     try {
+      logOtpDebug('verifyOtpStart', {
+        phone,
+        otpLength: fullOtp.length,
+        testAuthEnabled: ENABLE_TEST_AUTH,
+      });
+
       const response = await verifyOtp({
         phone,
         otp: fullOtp,
         displayName: `Anonymous-${phone.slice(-4)}`,
+      });
+
+      logOtpDebug('verifyOtpSuccess', {
+        phone,
+        userId: response?.user?.id || null,
+        role: response?.user?.role || null,
+        hasAccessToken: Boolean(response?.accessToken),
       });
 
       await setSession({
@@ -85,12 +109,23 @@ const OtpScreen = ({ navigation, route }) => {
         refreshToken: response.refreshToken,
       });
 
-      navigation.replace(response.user?.role === 'LISTENER' ? 'ListenerHome' : 'MainDrawer');
+      navigation.reset({
+        index: 0,
+        routes: [{ name: getHomeRouteName() }],
+      });
     } catch (apiError) {
+      logOtpDebug('verifyOtpFailure', {
+        phone,
+        status: apiError?.response?.status ?? null,
+        responseBody: apiError?.response?.data ?? null,
+        message: apiError?.message || 'Unknown error',
+      });
+
       const message =
         apiError?.response?.data?.message ||
         'Unable to verify OTP right now. Please try again.';
       setError(message);
+      Alert.alert('OTP Verification Failed', message);
     } finally {
       setLoading(false);
     }
@@ -98,16 +133,31 @@ const OtpScreen = ({ navigation, route }) => {
 
   const handleResend = async () => {
     try {
+      logOtpDebug('resendOtpStart', {
+        phone,
+        testAuthEnabled: ENABLE_TEST_AUTH,
+      });
       await sendOtp(phone);
+      logOtpDebug('resendOtpSuccess', {
+        phone,
+      });
       setOtp(Array(OTP_LENGTH).fill(''));
       setError('');
       inputRefs.current[0]?.focus();
       setFocusedIndex(0);
     } catch (apiError) {
+      logOtpDebug('resendOtpFailure', {
+        phone,
+        status: apiError?.response?.status ?? null,
+        responseBody: apiError?.response?.data ?? null,
+        message: apiError?.message || 'Unknown error',
+      });
+
       const message =
         apiError?.response?.data?.message ||
         'Unable to resend OTP right now. Please try again.';
       setError(message);
+      Alert.alert('OTP Resend Failed', message);
     }
   };
 

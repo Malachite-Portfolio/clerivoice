@@ -17,8 +17,6 @@ const maskIdentity = (value) => {
 // USER LOGIN (compatibility route for /api/v1/auth/login-user)
 const loginUserCompat = async (req, res) => {
   try {
-    const demoOtpBypass =
-      String(process.env.DEMO_USER_OTP_BYPASS).toLowerCase() === 'true';
     const incomingCode =
       req.body?.code ||
       req.body?.otp ||
@@ -32,32 +30,6 @@ const loginUserCompat = async (req, res) => {
       hasOtp: Boolean(String(incomingCode || '').trim()),
       ipAddress: req.ip,
     });
-
-    if (demoOtpBypass && String(incomingCode) === '123456') {
-      const phone = req.body?.phone || 'demo';
-      return res.status(200).json({
-        success: true,
-        message: 'Demo login success',
-        token: 'demo-token',
-        user: {
-          id: 'demo-user',
-          phone,
-        },
-        // Keep existing frontend compatibility (authApi expects response.data.data)
-        data: {
-          user: {
-            id: 'demo-user',
-            phone,
-            role: 'USER',
-            status: 'ACTIVE',
-            displayName: 'Demo User',
-          },
-          accessToken: 'demo-token',
-          refreshToken: 'demo-refresh-token',
-          demoMode: true,
-        },
-      });
-    }
 
     const { phone, code: bodyCode, otp, otpCode, verificationCode, pin, displayName, referralCode, deviceId, deviceInfo } = req.body || {};
     const normalizedOtp = String(
@@ -106,9 +78,6 @@ router.post('/login-user', loginUserCompat);
 // LISTENER LOGIN (compatibility route for /api/v1/auth/login-listener)
 router.post('/login-listener', async (req, res) => {
   try {
-    const demoListenerBypass =
-      String(process.env.DEMO_LISTENER_LOGIN_BYPASS).toLowerCase() === 'true';
-
     const incomingListenerId =
       req.body?.listenerId ||
       req.body?.phone ||
@@ -116,49 +85,22 @@ router.post('/login-listener', async (req, res) => {
       req.body?.phoneOrEmail;
 
     const incomingPassword = String(req.body?.password || '').trim();
+    const incomingOtp = String(
+      req.body?.otp ||
+        req.body?.code ||
+        req.body?.otpCode ||
+        req.body?.verificationCode ||
+        req.body?.pin ||
+        ''
+    ).trim();
 
     logger.info('[AuthCompat] login-listener request received', {
       keys: Object.keys(req.body || {}),
       identity: maskIdentity(incomingListenerId),
       hasPassword: Boolean(incomingPassword),
+      hasOtp: Boolean(incomingOtp),
       ipAddress: req.ip,
     });
-
-    if (
-      demoListenerBypass &&
-      String(incomingListenerId) === '000000101' &&
-      incomingPassword === '12345678'
-    ) {
-      return res.status(200).json({
-        success: true,
-        message: 'Demo listener login success',
-        data: {
-          listener: {
-            id: 'listener-demo-1',
-            listenerId: '000000101',
-            name: 'Demo Listener',
-            role: 'LISTENER',
-            status: 'ACTIVE',
-          },
-          // Keep existing frontend compatibility (client expects data.user)
-          user: {
-            id: 'listener-demo-1',
-            phone: null,
-            email: null,
-            displayName: 'Demo Listener',
-            role: 'LISTENER',
-            status: 'ACTIVE',
-            listenerProfile: {
-              availability: 'ONLINE',
-              isEnabled: true,
-            },
-          },
-          accessToken: 'demo-listener-token',
-          refreshToken: 'demo-listener-refresh-token',
-          demoMode: true,
-        },
-      });
-    }
 
     const { listenerId, phone, email, phoneOrEmail, password, deviceId, deviceInfo } = req.body || {};
     const listenerIdentity = listenerId || phone || email || phoneOrEmail;
@@ -167,6 +109,24 @@ router.post('/login-listener', async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Listener ID, phone, or email is required',
+      });
+    }
+
+    if (incomingOtp) {
+      const data = await authService.verifyListenerOtp({
+        phone: listenerIdentity,
+        otp: incomingOtp,
+        purpose: req.body?.purpose || 'LOGIN',
+        deviceId,
+        deviceInfo,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Listener logged in',
+        data,
       });
     }
 

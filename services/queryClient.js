@@ -5,11 +5,25 @@ export const queryKeys = {
     all: ['hosts'],
     list: (params = {}) => ['hosts', 'list', params],
   },
+  sessions: {
+    all: ['sessions'],
+    inbox: (role = 'user') => ['sessions', 'inbox', role],
+  },
   wallet: {
     summary: ['wallet', 'summary'],
+    plans: ['wallet', 'plans'],
+    history: (params = {}) => ['wallet', 'history', params],
   },
   referral: {
     me: ['referral', 'me'],
+    history: ['referral', 'history'],
+    faq: ['referral', 'faq'],
+  },
+  listener: {
+    dashboard: ['listener', 'dashboard'],
+    chats: ['listener', 'chats'],
+    calls: ['listener', 'calls'],
+    earnings: (params = {}) => ['listener', 'earnings', params],
   },
 };
 

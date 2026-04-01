@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
-  FlatList,
+  Image,
+  RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -10,22 +12,29 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import theme from '../constants/theme';
-import AppLogo from '../components/AppLogo';
+import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
-import { fetchHostAvailability } from '../services/listenersApi';
+import { getAuthEntryRouteName } from '../navigation/navigationRef';
+import { isUnauthorizedApiError } from '../services/apiClient';
+import {
+  fetchListenerDashboard,
+  fetchMyCallSessions,
+  updateMyAvailability,
+} from '../services/listenerApi';
 import {
   connectRealtimeSocket,
   getRealtimeSocket,
   subscribeRealtimeSocketState,
 } from '../services/realtimeSocket';
-import {
-  acceptCallRequest,
-  acceptChatRequest,
-  rejectCallRequest,
-  rejectChatRequest,
-  updateMyAvailability,
-} from '../services/listenerApi';
+import { queryKeys } from '../services/queryClient';
+import { getInboxItems } from '../services/sessionApi';
+import { fetchWalletHistory } from '../services/walletApi';
+
+const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
+
+const TABS = ['Dashboard', 'Chats', 'Calls', 'Earnings'];
 
 const availabilityLabels = {
   ONLINE: 'ONLINE',
@@ -33,57 +42,122 @@ const availabilityLabels = {
   BUSY: 'BUSY',
 };
 
+const formatCurrency = (value) => `INR ${Number(value || 0).toFixed(0)}`;
+
+const formatShortTime = (value) => {
+  if (!value) {
+    return 'Now';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'Now';
+  }
+
+  const now = new Date();
+  const isSameDay =
+    now.getDate() === date.getDate() &&
+    now.getMonth() === date.getMonth() &&
+    now.getFullYear() === date.getFullYear();
+
+  return isSameDay
+    ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+};
+
+const formatDuration = (seconds) => {
+  const safeSeconds = Number(seconds || 0);
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = safeSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+};
+
+const imageSource = (uri) => (uri ? { uri } : avatarPlaceholder);
+
+const logListenerDebug = (label, payload) => {
+  if (!AUTH_DEBUG_ENABLED) {
+    return;
+  }
+
+  console.log(`[ListenerHomeScreen] ${label}`, payload);
+};
+
 const ListenerHomeScreen = ({ navigation }) => {
   const { session, logout } = useAuth();
+  const queryClient = useQueryClient();
   const [availability, setAvailability] = useState('OFFLINE');
   const [updatingAvailability, setUpdatingAvailability] = useState(false);
-  const [incomingRequests, setIncomingRequests] = useState([]);
   const [syncState, setSyncState] = useState('disconnected');
+  const [activeTab, setActiveTab] = useState('Dashboard');
 
   const listenerName = session?.user?.displayName || 'Listener';
 
-  const sortedRequests = useMemo(
-    () =>
-      [...incomingRequests].sort(
-        (a, b) => new Date(b.requestedAt || Date.now()) - new Date(a.requestedAt || Date.now()),
-      ),
-    [incomingRequests],
-  );
+  const dashboardQuery = useQuery({
+    queryKey: queryKeys.listener.dashboard,
+    queryFn: fetchListenerDashboard,
+    enabled: Boolean(session?.accessToken),
+    staleTime: 8000,
+  });
 
-  const upsertIncomingRequest = (request) => {
-    setIncomingRequests((prev) => {
-      const existingIndex = prev.findIndex((item) => item.sessionId === request.sessionId);
-      if (existingIndex >= 0) {
-        const next = [...prev];
-        next[existingIndex] = request;
-        return next;
-      }
-      return [request, ...prev];
-    });
-  };
+  const chatsQuery = useQuery({
+    queryKey: queryKeys.sessions.inbox('listener'),
+    queryFn: () => getInboxItems({ currentUserId: session?.user?.id, limit: 12 }),
+    enabled: Boolean(session?.accessToken),
+    staleTime: 8000,
+  });
 
-  const removeIncomingRequest = (sessionId) => {
-    setIncomingRequests((prev) => prev.filter((item) => item.sessionId !== sessionId));
-  };
+  const callsQuery = useQuery({
+    queryKey: queryKeys.listener.calls,
+    queryFn: fetchMyCallSessions,
+    enabled: Boolean(session?.accessToken),
+    staleTime: 8000,
+  });
+
+  const earningsQuery = useQuery({
+    queryKey: queryKeys.listener.earnings({ type: 'ADMIN_CREDIT' }),
+    queryFn: () => fetchWalletHistory({ page: 1, limit: 20, type: 'ADMIN_CREDIT' }),
+    enabled: Boolean(session?.accessToken),
+    staleTime: 8000,
+  });
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.listener.dashboard }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.sessions.inbox('listener') }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.listener.calls }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.listener.earnings({ type: 'ADMIN_CREDIT' }),
+      }),
+    ]);
+  }, [queryClient]);
 
   useEffect(() => {
-    const loadCurrentAvailability = async () => {
-      if (!session?.user?.id) {
-        return;
-      }
+    if (dashboardQuery.data?.listener?.availability) {
+      setAvailability(dashboardQuery.data.listener.availability);
+    }
+  }, [dashboardQuery.data?.listener?.availability]);
 
-      try {
-        const status = await fetchHostAvailability(session.user.id);
-        if (status?.availability) {
-          setAvailability(status.availability);
-        }
-      } catch (_error) {
-        // Keep default state when backend read fails; user can retry with toggle actions.
-      }
-    };
+  useEffect(() => {
+    logListenerDebug('dashboardResponse', {
+      balance: dashboardQuery.data?.balance ?? null,
+      totalEarned: dashboardQuery.data?.totalEarned ?? null,
+      activeChats: dashboardQuery.data?.activeChats ?? null,
+      activeCalls: dashboardQuery.data?.activeCalls ?? null,
+    });
+  }, [
+    dashboardQuery.data?.activeCalls,
+    dashboardQuery.data?.activeChats,
+    dashboardQuery.data?.balance,
+    dashboardQuery.data?.totalEarned,
+  ]);
 
-    loadCurrentAvailability();
-  }, [session?.user?.id]);
+  useEffect(() => {
+    logListenerDebug('historyFetchResponses', {
+      chatItems: chatsQuery.data?.length || 0,
+      callItems: callsQuery.data?.items?.length || 0,
+      earningItems: earningsQuery.data?.items?.length || 0,
+    });
+  }, [callsQuery.data?.items?.length, chatsQuery.data?.length, earningsQuery.data?.items?.length]);
 
   useEffect(() => {
     if (!session?.accessToken) {
@@ -99,51 +173,54 @@ const ListenerHomeScreen = ({ navigation }) => {
       setSyncState(state);
     });
 
-    const onCallRequest = (payload) => {
-      upsertIncomingRequest({
-        sessionId: payload.sessionId,
-        type: 'call',
-        requester: payload.requester,
-        ratePerMinute: payload.ratePerMinute,
-        requestedAt: payload.requestedAt,
-      });
+    const invalidateLiveData = () => {
+      refreshAll().catch(() => {});
     };
 
-    const onChatRequest = (payload) => {
-      upsertIncomingRequest({
-        sessionId: payload.sessionId,
-        type: 'chat',
-        requester: payload.requester,
-        ratePerMinute: payload.ratePerMinute,
-        requestedAt: payload.requestedAt,
-      });
+    const onCallResolved = (payload) => {
+      invalidateLiveData();
     };
 
-    const onSessionResolved = (payload) => {
-      if (payload?.sessionId) {
-        removeIncomingRequest(payload.sessionId);
-      }
-    };
-
-    socket.on('call_request', onCallRequest);
-    socket.on('chat_request', onChatRequest);
-    socket.on('call_rejected', onSessionResolved);
-    socket.on('chat_rejected', onSessionResolved);
-    socket.on('call_ended', onSessionResolved);
-    socket.on('chat_ended', onSessionResolved);
-    socket.on('session_ended', onSessionResolved);
+    socket.on('chat_started', invalidateLiveData);
+    socket.on('chat_message', invalidateLiveData);
+    socket.on('chat_ended', invalidateLiveData);
+    socket.on('call_started', onCallResolved);
+    socket.on('call_rejected', onCallResolved);
+    socket.on('call_ended', onCallResolved);
+    socket.on('session_ended', onCallResolved);
+    socket.on('wallet_updated', invalidateLiveData);
 
     return () => {
-      socket.off('call_request', onCallRequest);
-      socket.off('chat_request', onChatRequest);
-      socket.off('call_rejected', onSessionResolved);
-      socket.off('chat_rejected', onSessionResolved);
-      socket.off('call_ended', onSessionResolved);
-      socket.off('chat_ended', onSessionResolved);
-      socket.off('session_ended', onSessionResolved);
+      socket.off('chat_started', invalidateLiveData);
+      socket.off('chat_message', invalidateLiveData);
+      socket.off('chat_ended', invalidateLiveData);
+      socket.off('call_started', onCallResolved);
+      socket.off('call_rejected', onCallResolved);
+      socket.off('call_ended', onCallResolved);
+      socket.off('session_ended', onCallResolved);
+      socket.off('wallet_updated', invalidateLiveData);
       unsubscribeSocketState();
     };
-  }, [session?.accessToken]);
+  }, [refreshAll, session?.accessToken]);
+
+  const chatItems = useMemo(
+    () => (chatsQuery.data || []).filter((item) => item?.type === 'chat'),
+    [chatsQuery.data],
+  );
+
+  const callItems = useMemo(() => callsQuery.data?.items || [], [callsQuery.data?.items]);
+
+  const earningItems = useMemo(() => {
+    return (earningsQuery.data?.items || []).filter((item) => {
+      const description = String(item?.description || '').toLowerCase();
+      return item?.metadata?.source === 'SESSION_EARNING' || description.includes('session earning');
+    });
+  }, [earningsQuery.data?.items]);
+
+  const recentSessions = useMemo(
+    () => dashboardQuery.data?.recentSessions || [],
+    [dashboardQuery.data?.recentSessions],
+  );
 
   const setOnlineState = async (nextAvailability) => {
     if (updatingAvailability || availability === nextAvailability) {
@@ -151,9 +228,16 @@ const ListenerHomeScreen = ({ navigation }) => {
     }
 
     setUpdatingAvailability(true);
+    logListenerDebug('availabilityChangeStart', {
+      nextAvailability,
+    });
+
     try {
       await updateMyAvailability(nextAvailability);
       setAvailability(nextAvailability);
+      logListenerDebug('availabilityChangeSuccess', {
+        nextAvailability,
+      });
 
       const socket = getRealtimeSocket();
       if (socket) {
@@ -165,7 +249,18 @@ const ListenerHomeScreen = ({ navigation }) => {
           socket.emit('listener_offline');
         }
       }
+
+      await refreshAll();
     } catch (apiError) {
+      logListenerDebug('availabilityChangeFailure', {
+        nextAvailability,
+        message: apiError?.response?.data?.message || apiError?.message || 'Unknown error',
+      });
+
+      if (isUnauthorizedApiError(apiError)) {
+        return;
+      }
+
       const message =
         apiError?.response?.data?.message || 'Unable to update listener availability.';
       Alert.alert('Status update failed', message);
@@ -174,58 +269,41 @@ const ListenerHomeScreen = ({ navigation }) => {
     }
   };
 
-  const acceptRequest = async (request) => {
-    try {
-      if (request.type === 'call') {
-        const callPayload = await acceptCallRequest(request.sessionId);
-        removeIncomingRequest(request.sessionId);
-        setAvailability('BUSY');
-        navigation.navigate('CallSession', {
-          callPayload,
-          host: {
-            name: request.requester?.displayName || 'User',
-            avatar: null,
-            userId: request.requester?.id,
-            sessionId: request.sessionId,
-          },
-        });
-        return;
-      }
-
-      const chatPayload = await acceptChatRequest(request.sessionId);
-      removeIncomingRequest(request.sessionId);
-      setAvailability('BUSY');
-      navigation.navigate('ChatSession', {
-        chatPayload,
-        host: {
-          name: request.requester?.displayName || 'User',
-          avatar: null,
-          userId: request.requester?.id,
-          sessionId: request.sessionId,
-        },
-      });
-    } catch (apiError) {
-      const message =
-        apiError?.response?.data?.message ||
-        apiError?.message ||
-        'Unable to accept request.';
-      Alert.alert('Request failed', message);
-      removeIncomingRequest(request.sessionId);
-    }
+  const openChatItem = (item) => {
+    navigation.navigate('ChatSession', {
+      chatPayload: {
+        session: item.session,
+        agora: null,
+      },
+      host: {
+        name: item?.participant?.name || 'Conversation',
+        avatar: item?.participant?.profileImageUrl || null,
+        userId: item?.participant?.id || item?.session?.userId || null,
+        listenerId: item?.session?.listenerId || null,
+      },
+    });
   };
 
-  const rejectRequest = async (request) => {
-    try {
-      if (request.type === 'call') {
-        await rejectCallRequest(request.sessionId, 'Rejected by listener');
-      } else {
-        await rejectChatRequest(request.sessionId, 'Rejected by listener');
-      }
-    } catch (_error) {
-      // Keep local queue clean even if network rejects.
-    } finally {
-      removeIncomingRequest(request.sessionId);
+  const openCallItem = (item) => {
+    if (!['ACTIVE', 'RINGING'].includes(String(item?.status || '').toUpperCase())) {
+      Alert.alert(
+        'Call history',
+        `${item?.user?.displayName || 'User'} - ${String(item?.status || 'ENDED').toUpperCase()}`,
+      );
+      return;
     }
+
+    navigation.navigate('CallSession', {
+      callPayload: {
+        session: item,
+        agora: null,
+      },
+      host: {
+        name: item?.user?.displayName || 'User',
+        avatar: item?.user?.profileImageUrl || null,
+        userId: item?.user?.id || item?.userId || null,
+      },
+    });
   };
 
   const onLogout = async () => {
@@ -233,102 +311,301 @@ const ListenerHomeScreen = ({ navigation }) => {
     if (socket) {
       socket.emit('listener_offline');
     }
+
     await logout();
     navigation.reset({
       index: 0,
-      routes: [{ name: 'Onboarding' }],
+      routes: [{ name: getAuthEntryRouteName() }],
     });
   };
 
-  const renderRequest = ({ item }) => {
-    const requestTypeLabel = item.type === 'call' ? 'Incoming Call' : 'Incoming Chat';
-    const requesterName = item.requester?.displayName || 'Anonymous User';
-    const requestedTime = new Date(item.requestedAt || Date.now()).toLocaleTimeString();
+  const renderMetricCard = (label, value, tone = 'default') => (
+    <View
+      style={[
+        styles.metricCard,
+        tone === 'accent' ? styles.metricCardAccent : null,
+        tone === 'success' ? styles.metricCardSuccess : null,
+      ]}
+    >
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricValue}>{value}</Text>
+    </View>
+  );
 
-    return (
-      <View style={styles.requestCard}>
-        <Text style={styles.requestType}>{requestTypeLabel}</Text>
-        <Text style={styles.requestName}>{requesterName}</Text>
-        <Text style={styles.requestMeta}>
-          Rate: INR {item.ratePerMinute}/min - {requestedTime}
+  const renderDashboard = () => (
+    <>
+      <View style={styles.metricsGrid}>
+        {renderMetricCard('Balance', formatCurrency(dashboardQuery.data?.balance), 'accent')}
+        {renderMetricCard('Total Earned', formatCurrency(dashboardQuery.data?.totalEarned), 'success')}
+        {renderMetricCard('Today Earned', formatCurrency(dashboardQuery.data?.todayEarned))}
+        {renderMetricCard(
+          'Active Sessions',
+          `${dashboardQuery.data?.activeChats || 0} chat • ${dashboardQuery.data?.activeCalls || 0} call`,
+        )}
+      </View>
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Availability</Text>
+        <Text style={styles.sectionSubTitle}>
+          Sync: {syncState.toUpperCase()} • Status: {availabilityLabels[availability]}
         </Text>
-
-        <View style={styles.requestActions}>
-          <TouchableOpacity
-            style={[styles.requestButton, styles.rejectButton]}
-            onPress={() => rejectRequest(item)}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.requestButtonText}>Reject</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.requestButton, styles.acceptButton]}
-            onPress={() => acceptRequest(item)}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.requestButtonText}>Accept</Text>
-          </TouchableOpacity>
+        <View style={styles.toggleRow}>
+          {['ONLINE', 'OFFLINE'].map((status) => (
+            <TouchableOpacity
+              key={status}
+              style={[
+                styles.toggleButton,
+                availability === status ? styles.toggleButtonActive : null,
+              ]}
+              onPress={() => setOnlineState(status)}
+              activeOpacity={0.85}
+              disabled={updatingAvailability}
+            >
+              <Text style={styles.toggleText}>{status === 'ONLINE' ? 'Go Online' : 'Go Offline'}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
       </View>
-    );
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Recent Sessions</Text>
+        {recentSessions.length ? (
+          recentSessions.map((item) => (
+            <TouchableOpacity
+              key={`${item.type}-${item.id}`}
+              style={styles.historyRow}
+              onPress={() =>
+                item.type === 'chat'
+                  ? openChatItem({
+                      session: {
+                        id: item.id,
+                        listenerId: session?.user?.id,
+                        userId: item?.counterparty?.id || null,
+                        status: item.status,
+                        startedAt: item.timestamp,
+                      },
+                      participant: {
+                        id: item?.counterparty?.id || null,
+                        name: item?.counterparty?.displayName || 'Anonymous User',
+                        profileImageUrl: item?.counterparty?.profileImageUrl || null,
+                      },
+                    })
+                  : openCallItem({
+                      id: item.id,
+                      userId: item?.counterparty?.id || null,
+                      listenerId: session?.user?.id,
+                      user: {
+                        id: item?.counterparty?.id || null,
+                        displayName: item?.counterparty?.displayName || 'Anonymous User',
+                        profileImageUrl: item?.counterparty?.profileImageUrl || null,
+                      },
+                      status: item.status,
+                      durationSeconds: item.durationSeconds || 0,
+                      totalAmount: item.totalAmount || 0,
+                      startedAt: item.timestamp,
+                      answeredAt: item.timestamp,
+                    })
+              }
+              activeOpacity={0.85}
+            >
+              <View style={styles.historyIconWrap}>
+                <Ionicons
+                  name={item.type === 'chat' ? 'chatbubble-ellipses' : 'call'}
+                  size={18}
+                  color={theme.colors.textPrimary}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.historyName}>
+                  {item?.counterparty?.displayName || 'Anonymous User'}
+                </Text>
+                <Text style={styles.historyMeta}>
+                  {String(item.status || '').toUpperCase()} • {formatShortTime(item.timestamp)}
+                </Text>
+              </View>
+              <Text style={styles.historyValue}>{formatCurrency(item.totalAmount)}</Text>
+            </TouchableOpacity>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>Recent sessions will appear here.</Text>
+        )}
+      </View>
+    </>
+  );
+
+  const renderChats = () => (
+    <View style={styles.sectionCard}>
+      <Text style={styles.sectionTitle}>Chat Inbox</Text>
+      {chatItems.length ? (
+        chatItems.map((item) => (
+          <TouchableOpacity
+            key={item.id}
+            style={styles.inboxRow}
+            onPress={() => openChatItem(item)}
+            activeOpacity={0.85}
+          >
+            <Image
+              source={imageSource(item?.participant?.profileImageUrl)}
+              style={styles.requestAvatar}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.requestName}>{item?.participant?.name || 'Conversation'}</Text>
+              <Text style={styles.requestMeta}>{item?.preview || 'Start conversation...'}</Text>
+            </View>
+            <View style={styles.trailingColumn}>
+              <Text style={styles.trailingTime}>{formatShortTime(item?.timestamp)}</Text>
+              {item?.unreadCount ? (
+                <View style={styles.unreadBadge}>
+                  <Text style={styles.unreadBadgeText}>
+                    {item.unreadCount > 9 ? '9+' : item.unreadCount}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </TouchableOpacity>
+        ))
+      ) : (
+        <Text style={styles.emptyText}>Your real chat sessions will appear here.</Text>
+      )}
+    </View>
+  );
+
+  const renderCalls = () => (
+    <View style={styles.sectionCard}>
+      <Text style={styles.sectionTitle}>Call History</Text>
+      {callItems.length ? (
+        callItems.map((item) => (
+          <TouchableOpacity
+            key={item.id}
+            style={styles.historyRow}
+            onPress={() => openCallItem(item)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.historyIconWrap}>
+              <Ionicons name="call" size={18} color={theme.colors.textPrimary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.historyName}>{item?.user?.displayName || 'Anonymous User'}</Text>
+              <Text style={styles.historyMeta}>
+                {String(item?.status || '').toUpperCase()} •{' '}
+                {item?.durationSeconds ? formatDuration(item.durationSeconds) : '00:00'}
+              </Text>
+            </View>
+            <View style={styles.trailingColumn}>
+              <Text style={styles.trailingTime}>{formatShortTime(item?.startedAt || item?.requestedAt)}</Text>
+              <Text style={styles.historyValue}>{formatCurrency(item?.totalAmount)}</Text>
+            </View>
+          </TouchableOpacity>
+        ))
+      ) : (
+        <Text style={styles.emptyText}>Your real call history will appear here.</Text>
+      )}
+    </View>
+  );
+
+  const renderEarnings = () => (
+    <View style={styles.sectionCard}>
+      <Text style={styles.sectionTitle}>Earnings History</Text>
+      <Text style={styles.sectionSubTitle}>
+        {formatCurrency(dashboardQuery.data?.totalEarned)} total • {formatCurrency(dashboardQuery.data?.todayEarned)} today
+      </Text>
+      {earningItems.length ? (
+        earningItems.map((item) => (
+          <View key={item.id} style={styles.earningRow}>
+            <View style={styles.historyIconWrap}>
+              <Ionicons name="wallet" size={18} color={theme.colors.textPrimary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.historyName}>{item?.description || 'Session earning'}</Text>
+              <Text style={styles.historyMeta}>
+                {String(item?.metadata?.sessionType || item?.sessionType || '').toUpperCase() || 'SESSION'} •{' '}
+                {formatShortTime(item?.createdAt)}
+              </Text>
+            </View>
+            <View style={styles.trailingColumn}>
+              <Text style={styles.earningAmount}>+{formatCurrency(item?.amount)}</Text>
+              <Text style={styles.trailingTime}>
+                Bal: {formatCurrency(item?.balanceAfter)}
+              </Text>
+            </View>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.emptyText}>Listener earnings will appear here after paid sessions.</Text>
+      )}
+    </View>
+  );
+
+  const renderActiveTab = () => {
+    if (activeTab === 'Chats') {
+      return renderChats();
+    }
+
+    if (activeTab === 'Calls') {
+      return renderCalls();
+    }
+
+    if (activeTab === 'Earnings') {
+      return renderEarnings();
+    }
+
+    return renderDashboard();
   };
+
+  const isRefreshing =
+    dashboardQuery.isRefetching ||
+    chatsQuery.isRefetching ||
+    callsQuery.isRefetching ||
+    earningsQuery.isRefetching;
 
   return (
     <LinearGradient colors={['#04020C', '#0A0312', '#1B0623']} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.header}>
-          <AppLogo size="sm" />
-          <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.85}>
-            <Ionicons name="log-out-outline" size={18} color={theme.colors.textPrimary} />
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.welcomeCard}>
-          <Text style={styles.welcomeTitle}>Welcome, {listenerName}</Text>
-          <Text style={styles.welcomeSubTitle}>
-            Listener Sync: {syncState.toUpperCase()} - Status: {availabilityLabels[availability]}
-          </Text>
-        </View>
-
-        <View style={styles.toggleRow}>
-          <TouchableOpacity
-            style={[
-              styles.toggleButton,
-              availability === 'ONLINE' && styles.toggleButtonActive,
-            ]}
-            onPress={() => setOnlineState('ONLINE')}
-            activeOpacity={0.85}
-            disabled={updatingAvailability}
-          >
-            <Text style={styles.toggleText}>Go Online</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.toggleButton,
-              availability === 'OFFLINE' && styles.toggleButtonActive,
-            ]}
-            onPress={() => setOnlineState('OFFLINE')}
-            activeOpacity={0.85}
-            disabled={updatingAvailability}
-          >
-            <Text style={styles.toggleText}>Go Offline</Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={styles.sectionTitle}>Incoming Requests</Text>
-
-        <FlatList
-          data={sortedRequests}
-          keyExtractor={(item) => `${item.type}-${item.sessionId}`}
-          renderItem={renderRequest}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyText}>No incoming requests yet.</Text>
-            </View>
-          }
-          contentContainerStyle={styles.listContent}
+        <ScrollView
           showsVerticalScrollIndicator={false}
-        />
+          contentContainerStyle={styles.content}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={refreshAll}
+              tintColor="#FF2AA3"
+            />
+          }
+        >
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>Listener Dashboard</Text>
+            <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.85}>
+              <Ionicons name="log-out-outline" size={18} color={theme.colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.welcomeCard}>
+            <Text style={styles.welcomeTitle}>Welcome, {listenerName}</Text>
+            <Text style={styles.welcomeSubTitle}>
+              {formatCurrency(dashboardQuery.data?.balance)} available • {availabilityLabels[availability]}
+            </Text>
+          </View>
+
+          <View style={styles.tabRow}>
+            {TABS.map((tab) => {
+              const isActive = tab === activeTab;
+              return (
+                <TouchableOpacity
+                  key={tab}
+                  style={[styles.tabButton, isActive ? styles.tabButtonActive : null]}
+                  onPress={() => setActiveTab(tab)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={[styles.tabButtonText, isActive ? styles.tabButtonTextActive : null]}>
+                    {tab}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {renderActiveTab()}
+        </ScrollView>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -336,17 +613,23 @@ const ListenerHomeScreen = ({ navigation }) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  safeArea: { flex: 1, paddingHorizontal: 16, paddingBottom: 12 },
+  safeArea: { flex: 1 },
+  content: { paddingHorizontal: 16, paddingBottom: 24 },
   header: {
-    marginTop: 4,
+    marginTop: 6,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  headerTitle: {
+    color: theme.colors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+  },
   logoutButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
     alignItems: 'center',
@@ -355,12 +638,12 @@ const styles = StyleSheet.create({
   },
   welcomeCard: {
     marginTop: 14,
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: theme.colors.borderPink,
     backgroundColor: 'rgba(255, 42, 163, 0.08)',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
   welcomeTitle: {
     color: theme.colors.textPrimary,
@@ -372,8 +655,87 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     fontSize: 12,
   },
-  toggleRow: {
+  tabRow: {
     marginTop: 14,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  tabButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  tabButtonActive: {
+    borderColor: theme.colors.borderPink,
+    backgroundColor: 'rgba(255,42,163,0.22)',
+  },
+  tabButtonText: {
+    color: theme.colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  tabButtonTextActive: {
+    color: theme.colors.textPrimary,
+  },
+  metricsGrid: {
+    marginTop: 16,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  metricCard: {
+    width: '48%',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  metricCardAccent: {
+    borderColor: theme.colors.borderPink,
+    backgroundColor: 'rgba(255,42,163,0.14)',
+  },
+  metricCardSuccess: {
+    borderColor: 'rgba(15,214,122,0.35)',
+    backgroundColor: 'rgba(15,214,122,0.10)',
+  },
+  metricLabel: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  metricValue: {
+    marginTop: 8,
+    color: theme.colors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  sectionCard: {
+    marginTop: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  sectionTitle: {
+    color: theme.colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  sectionSubTitle: {
+    marginTop: 4,
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+  },
+  toggleRow: {
+    marginTop: 12,
     flexDirection: 'row',
     gap: 10,
   },
@@ -389,41 +751,36 @@ const styles = StyleSheet.create({
   },
   toggleButtonActive: {
     borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255, 42, 163, 0.24)',
+    backgroundColor: 'rgba(255,42,163,0.24)',
   },
   toggleText: {
     color: theme.colors.textPrimary,
     fontSize: 13,
     fontWeight: '700',
   },
-  sectionTitle: {
-    marginTop: 18,
-    color: theme.colors.textPrimary,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  listContent: {
-    paddingTop: 10,
-    paddingBottom: 20,
-    flexGrow: 1,
-  },
   requestCard: {
+    marginTop: 12,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
     padding: 12,
-    marginBottom: 10,
   },
-  requestType: {
-    color: theme.colors.magenta,
-    fontSize: 12,
-    fontWeight: '700',
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  requestAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,42,163,0.5)',
+    marginRight: 12,
   },
   requestName: {
-    marginTop: 4,
     color: theme.colors.textPrimary,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '700',
   },
   requestMeta: {
@@ -431,12 +788,25 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     fontSize: 12,
   },
+  livePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,42,163,0.35)',
+    backgroundColor: 'rgba(255,42,163,0.16)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  livePillText: {
+    color: theme.colors.textPrimary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
   requestActions: {
-    marginTop: 10,
+    marginTop: 12,
     flexDirection: 'row',
     gap: 10,
   },
-  requestButton: {
+  actionButton: {
     flex: 1,
     height: 40,
     borderRadius: 12,
@@ -444,30 +814,89 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  acceptButton: {
+    borderColor: theme.colors.borderPink,
+    backgroundColor: 'rgba(255,42,163,0.24)',
+  },
   rejectButton: {
     borderColor: 'rgba(255,255,255,0.2)',
     backgroundColor: 'rgba(255,255,255,0.08)',
   },
-  acceptButton: {
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255, 42, 163, 0.25)',
-  },
-  requestButtonText: {
+  actionButtonText: {
     color: theme.colors.textPrimary,
     fontSize: 13,
     fontWeight: '700',
   },
-  emptyState: {
-    flex: 1,
-    borderRadius: 16,
+  historyRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  historyIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.05)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 30,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    marginRight: 12,
+  },
+  historyName: {
+    color: theme.colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  historyMeta: {
+    marginTop: 3,
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+  },
+  historyValue: {
+    color: theme.colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  trailingColumn: {
+    alignItems: 'flex-end',
+  },
+  trailingTime: {
+    color: theme.colors.textMuted,
+    fontSize: 11,
+  },
+  inboxRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  unreadBadge: {
+    marginTop: 6,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: theme.colors.magenta,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  unreadBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  earningRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  earningAmount: {
+    color: theme.colors.success,
+    fontSize: 13,
+    fontWeight: '700',
   },
   emptyText: {
+    marginTop: 12,
     color: theme.colors.textSecondary,
     fontSize: 13,
   },

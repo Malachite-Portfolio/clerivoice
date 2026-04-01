@@ -15,13 +15,15 @@ class SessionBillingManager {
     this.callTimers = new Map();
   }
 
-  startChatBilling(sessionId) {
+  startChatBilling(sessionId, { runImmediately = false } = {}) {
     const key = String(sessionId);
 
     if (this.chatTimers.has(key)) {
+      logger.info('Chat billing already running', { sessionId: key });
       return;
     }
 
+    logger.info('Starting chat billing', { sessionId: key, runImmediately });
     const timer = setInterval(() => {
       this.processChatTick(key).catch((error) => {
         logger.error('Chat billing tick failed', { sessionId: key, error: error.message });
@@ -29,6 +31,12 @@ class SessionBillingManager {
     }, BILLING_INTERVAL_MS);
 
     this.chatTimers.set(key, timer);
+
+    if (runImmediately) {
+      this.processChatTick(key).catch((error) => {
+        logger.error('Immediate chat billing tick failed', { sessionId: key, error: error.message });
+      });
+    }
   }
 
   stopChatBilling(sessionId) {
@@ -37,16 +45,19 @@ class SessionBillingManager {
     if (timer) {
       clearInterval(timer);
       this.chatTimers.delete(key);
+      logger.info('Stopped chat billing', { sessionId: key });
     }
   }
 
-  startCallBilling(sessionId) {
+  startCallBilling(sessionId, { runImmediately = false } = {}) {
     const key = String(sessionId);
 
     if (this.callTimers.has(key)) {
+      logger.info('Call billing already running', { sessionId: key });
       return;
     }
 
+    logger.info('Starting call billing', { sessionId: key, runImmediately });
     const timer = setInterval(() => {
       this.processCallTick(key).catch((error) => {
         logger.error('Call billing tick failed', { sessionId: key, error: error.message });
@@ -54,6 +65,12 @@ class SessionBillingManager {
     }, BILLING_INTERVAL_MS);
 
     this.callTimers.set(key, timer);
+
+    if (runImmediately) {
+      this.processCallTick(key).catch((error) => {
+        logger.error('Immediate call billing tick failed', { sessionId: key, error: error.message });
+      });
+    }
   }
 
   stopCallBilling(sessionId) {
@@ -62,6 +79,7 @@ class SessionBillingManager {
     if (timer) {
       clearInterval(timer);
       this.callTimers.delete(key);
+      logger.info('Stopped call billing', { sessionId: key });
     }
   }
 
@@ -125,39 +143,96 @@ class SessionBillingManager {
 
     const amount = walletService.toNumber(session.ratePerMinute);
     const billingIndex = session.billedMinutes + 1;
+    logger.info('Processing chat billing tick', {
+      sessionId: session.id,
+      billingIndex,
+      amount,
+      userId: session.userId,
+      listenerId: session.listenerId,
+    });
 
     try {
-      const debitTx = await walletService.debitWallet({
-        userId: session.userId,
-        amount,
-        type: 'CHAT_DEBIT',
-        relatedSessionId: session.id,
-        description: `Chat billing minute ${billingIndex}`,
-        metadata: {
-          sessionType: 'chat',
-          billedMinute: billingIndex,
-        },
-        idempotencyKey: `chat:${session.id}:${billingIndex}`,
-      });
+      const billingResult = await prisma.$transaction(
+        async (tx) => {
+          const debitTx = await walletService.debitWallet({
+            userId: session.userId,
+            amount,
+            type: 'CHAT_DEBIT',
+            relatedSessionId: session.id,
+            description: `Chat billing minute ${billingIndex}`,
+            metadata: {
+              sessionType: 'chat',
+              billedMinute: billingIndex,
+              source: 'SESSION_BILLING',
+            },
+            idempotencyKey: `chat:${session.id}:${billingIndex}`,
+            tx,
+          });
 
-      const updated = await prisma.chatSession.update({
-        where: { id: session.id },
-        data: {
-          billedMinutes: { increment: 1 },
-          totalAmount: { increment: amount },
+          const creditTx = await walletService.creditWallet({
+            userId: session.listenerId,
+            amount,
+            type: 'ADMIN_CREDIT',
+            relatedSessionId: session.id,
+            description: `Session earning from chat minute ${billingIndex}`,
+            metadata: {
+              source: 'SESSION_EARNING',
+              sessionType: 'chat',
+              billedMinute: billingIndex,
+              counterpartUserId: session.userId,
+            },
+            idempotencyKey: `listener-chat:${session.id}:${billingIndex}`,
+            tx,
+          });
+
+          const updated = await tx.chatSession.update({
+            where: { id: session.id },
+            data: {
+              billedMinutes: { increment: 1 },
+              totalAmount: { increment: amount },
+            },
+          });
+
+          return {
+            updated,
+            debitTx,
+            creditTx,
+          };
         },
+        {
+          maxWait: 20000,
+          timeout: 20000,
+        }
+      );
+
+      logger.info('User wallet debited for chat session', {
+        sessionId: session.id,
+        billingIndex,
+        balanceAfter: walletService.toNumber(billingResult.debitTx.balanceAfter),
+      });
+      logger.info('Listener earnings credited for chat session', {
+        sessionId: session.id,
+        billingIndex,
+        balanceAfter: walletService.toNumber(billingResult.creditTx.balanceAfter),
       });
 
       this.io.to(`user:${session.userId}`).emit('wallet_updated', {
         userId: session.userId,
-        balance: walletService.toNumber(debitTx.balanceAfter),
+        balance: walletService.toNumber(billingResult.debitTx.balanceAfter),
         sessionId: session.id,
         sessionType: 'chat',
+      });
+      this.io.to(`user:${session.listenerId}`).emit('wallet_updated', {
+        userId: session.listenerId,
+        balance: walletService.toNumber(billingResult.creditTx.balanceAfter),
+        sessionId: session.id,
+        sessionType: 'chat',
+        source: 'listener_earning',
       });
 
       const rules = await getBillingRules();
       const remainingMinutes = walletService.estimateTalkTime(
-        walletService.toNumber(debitTx.balanceAfter),
+        walletService.toNumber(billingResult.debitTx.balanceAfter),
         amount
       );
 
@@ -169,11 +244,15 @@ class SessionBillingManager {
         });
       }
 
-      if (updated.status !== 'ACTIVE') {
+      if (billingResult.updated.status !== 'ACTIVE') {
         this.stopChatBilling(session.id);
       }
     } catch (error) {
       if (error.code === 'INSUFFICIENT_BALANCE') {
+        logger.warn('Stopping chat billing because user balance is insufficient', {
+          sessionId: session.id,
+          userId: session.userId,
+        });
         await chatService.emitLowBalanceEnded(session.id);
         this.io.to(`user:${session.userId}`).emit('chat_low_balance_warning', {
           sessionId: session.id,
@@ -214,44 +293,104 @@ class SessionBillingManager {
 
     const amount = walletService.toNumber(session.ratePerMinute);
     const billingIndex = session.billedMinutes + 1;
+    logger.info('Processing call billing tick', {
+      sessionId: session.id,
+      billingIndex,
+      amount,
+      userId: session.userId,
+      listenerId: session.listenerId,
+    });
 
     try {
-      const debitTx = await walletService.debitWallet({
-        userId: session.userId,
-        amount,
-        type: 'CALL_DEBIT',
-        relatedSessionId: session.id,
-        description: `Call billing minute ${billingIndex}`,
-        metadata: {
-          sessionType: 'call',
-          billedMinute: billingIndex,
+      const billingResult = await prisma.$transaction(
+        async (tx) => {
+          const debitTx = await walletService.debitWallet({
+            userId: session.userId,
+            amount,
+            type: 'CALL_DEBIT',
+            relatedSessionId: session.id,
+            description: `Call billing minute ${billingIndex}`,
+            metadata: {
+              sessionType: 'call',
+              billedMinute: billingIndex,
+              source: 'SESSION_BILLING',
+            },
+            idempotencyKey: `call:${session.id}:${billingIndex}`,
+            tx,
+          });
+
+          const creditTx = await walletService.creditWallet({
+            userId: session.listenerId,
+            amount,
+            type: 'ADMIN_CREDIT',
+            relatedSessionId: session.id,
+            description: `Session earning from call minute ${billingIndex}`,
+            metadata: {
+              source: 'SESSION_EARNING',
+              sessionType: 'call',
+              billedMinute: billingIndex,
+              counterpartUserId: session.userId,
+            },
+            idempotencyKey: `listener-call:${session.id}:${billingIndex}`,
+            tx,
+          });
+
+          const now = dayjs();
+          const answeredAt = session.answeredAt
+            ? dayjs(session.answeredAt)
+            : dayjs(session.startedAt || now);
+          const durationSeconds = Math.max(0, now.diff(answeredAt, 'second'));
+
+          const updated = await tx.callSession.update({
+            where: { id: session.id },
+            data: {
+              billedMinutes: { increment: 1 },
+              totalAmount: { increment: amount },
+              durationSeconds,
+            },
+          });
+
+          return {
+            updated,
+            debitTx,
+            creditTx,
+            durationSeconds,
+          };
         },
-        idempotencyKey: `call:${session.id}:${billingIndex}`,
+        {
+          maxWait: 20000,
+          timeout: 20000,
+        }
+      );
+
+      logger.info('User wallet debited for call session', {
+        sessionId: session.id,
+        billingIndex,
+        balanceAfter: walletService.toNumber(billingResult.debitTx.balanceAfter),
       });
-
-      const now = dayjs();
-      const answeredAt = session.answeredAt ? dayjs(session.answeredAt) : dayjs(session.startedAt || now);
-      const durationSeconds = Math.max(0, now.diff(answeredAt, 'second'));
-
-      await prisma.callSession.update({
-        where: { id: session.id },
-        data: {
-          billedMinutes: { increment: 1 },
-          totalAmount: { increment: amount },
-          durationSeconds,
-        },
+      logger.info('Listener earnings credited for call session', {
+        sessionId: session.id,
+        billingIndex,
+        balanceAfter: walletService.toNumber(billingResult.creditTx.balanceAfter),
       });
 
       this.io.to(`user:${session.userId}`).emit('wallet_updated', {
         userId: session.userId,
-        balance: walletService.toNumber(debitTx.balanceAfter),
+        balance: walletService.toNumber(billingResult.debitTx.balanceAfter),
         sessionId: session.id,
         sessionType: 'call',
+      });
+      this.io.to(`user:${session.listenerId}`).emit('wallet_updated', {
+        userId: session.listenerId,
+        balance: walletService.toNumber(billingResult.creditTx.balanceAfter),
+        sessionId: session.id,
+        sessionType: 'call',
+        source: 'listener_earning',
       });
 
       const rules = await getBillingRules();
       const remainingMinutes = walletService.estimateTalkTime(
-        walletService.toNumber(debitTx.balanceAfter),
+        walletService.toNumber(billingResult.debitTx.balanceAfter),
         amount
       );
 
@@ -264,6 +403,10 @@ class SessionBillingManager {
       }
     } catch (error) {
       if (error.code === 'INSUFFICIENT_BALANCE') {
+        logger.warn('Stopping call billing because user balance is insufficient', {
+          sessionId: session.id,
+          userId: session.userId,
+        });
         await callService.emitLowBalanceEnded(session.id);
         this.io.to(`user:${session.userId}`).emit('call_low_balance_warning', {
           sessionId: session.id,

@@ -29,6 +29,19 @@ const envSchema = z.object({
 
   OTP_EXPIRY_MINUTES: z.coerce.number().default(5),
   OTP_MAX_ATTEMPTS: z.coerce.number().default(5),
+  ENABLE_TEST_AUTH: z
+    .string()
+    .default('false')
+    .transform((value) => value.toLowerCase() === 'true'),
+  TEST_AUTH_FIXED_OTP: z.string().default('123456'),
+  TEST_USER_PHONE: z.string().default('+910000000201'),
+  TEST_USER_PHONES: z.string().default(''),
+  TEST_USER_NUMBERS: z.string().default(''),
+  TEST_USER_DISPLAY_NAME: z.string().default('Test User'),
+  TEST_LISTENER_PHONE: z.string().default('+910000000101'),
+  TEST_LISTENER_PHONES: z.string().default(''),
+  TEST_LISTENER_NUMBERS: z.string().default(''),
+  TEST_LISTENER_DISPLAY_NAME: z.string().default('Test Listener'),
   DEMO_OTP_MODE: z
     .string()
     .default('false')
@@ -54,6 +67,11 @@ const envSchema = z.object({
   AGORA_APP_CERTIFICATE: z.string().default(''),
   AGORA_TOKEN_EXPIRE_SECONDS: z.coerce.number().int().min(60).default(3600),
   AGORA_CHAT_APP_KEY: z.string().default(''),
+  PUSH_NOTIFICATIONS_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value.toLowerCase() === 'true'),
+  EXPO_PUSH_ACCESS_TOKEN: z.string().optional(),
 
   MIN_CHAT_START_BALANCE: z.coerce.number().default(20),
   MIN_CALL_START_BALANCE: z.coerce.number().default(30),
@@ -65,6 +83,12 @@ const parsed = envSchema.safeParse({
   ...process.env,
   JWT_ACCESS_SECRET: process.env.JWT_ACCESS_SECRET || jwtSecretFromEnv,
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || jwtSecretFromEnv,
+  TEST_USER_PHONES: process.env.TEST_USER_PHONES || process.env.TEST_USER_NUMBERS || '',
+  TEST_USER_NUMBERS: process.env.TEST_USER_NUMBERS || process.env.TEST_USER_PHONES || '',
+  TEST_LISTENER_PHONES:
+    process.env.TEST_LISTENER_PHONES || process.env.TEST_LISTENER_NUMBERS || '',
+  TEST_LISTENER_NUMBERS:
+    process.env.TEST_LISTENER_NUMBERS || process.env.TEST_LISTENER_PHONES || '',
   AGORA_TOKEN_EXPIRE_SECONDS: tokenExpireSecondsFromEnv,
 });
 

@@ -1,400 +1,540 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Alert,
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, FlatList, Image, Keyboard, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
-import { AGORA_CHAT_APP_KEY } from '../constants/api';
+import { AGORA_CHAT_APP_KEY, AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
-import AppLogo from '../components/AppLogo';
-import {
-  connectRealtimeSocket,
-  emitWithAck,
-  getRealtimeSocket,
-} from '../services/realtimeSocket';
-import {
-  endChatSession,
-  getChatMessages,
-  refreshChatToken,
-} from '../services/sessionApi';
-import {
-  initAgoraChatSession,
-  leaveAgoraChatSession,
-  renewAgoraChatToken,
-} from '../services/agoraChatService';
+import { resetToAuthEntry } from '../navigation/navigationRef';
+import { isUnauthorizedApiError } from '../services/apiClient';
+import { addDemoChatMessage, addDemoChatReply } from '../services/demoMode';
+import { connectRealtimeSocket, emitWithAck, getRealtimeSocket } from '../services/realtimeSocket';
+import { endChatSession, getChatMessages, refreshChatToken, requestCall } from '../services/sessionApi';
+import { initAgoraChatSession, leaveAgoraChatSession, renewAgoraChatToken } from '../services/agoraChatService';
+import { requestCallAudioPermissions } from '../services/audioPermissions';
 
-const formatDuration = (seconds) => {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
+const PATTERN = [{ t: 20, l: 24, s: 54 }, { t: 110, l: 180, s: 28 }, { t: 160, l: 42, s: 16 }, { t: 280, l: 220, s: 44 }, { t: 380, l: 70, s: 24 }, { t: 460, l: 200, s: 18 }, { t: 520, l: 18, s: 60 }, { t: 620, l: 190, s: 26 }];
+const src = (v) => (typeof v === 'string' ? { uri: v } : v || avatarPlaceholder);
+const time = (v) => new Date(v || Date.now()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const duration = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+
+const normalizeChatStatus = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (!normalized) {
+    return 'ACTIVE';
+  }
+
+  // Legacy sessions may still be marked REQUESTED from older builds; chat no longer requires approval.
+  if (normalized === 'REQUESTED') {
+    return 'ACTIVE';
+  }
+
+  return normalized;
+};
+
+const logChatDebug = (label, payload) => {
+  if (!AUTH_DEBUG_ENABLED) {
+    return;
+  }
+
+  console.log(`[ChatSessionScreen] ${label}`, payload);
 };
 
 const ChatSessionScreen = ({ navigation, route }) => {
   const { session: authSession } = useAuth();
   const payload = route?.params?.chatPayload;
-  const host = route?.params?.host;
+  const host = route?.params?.host || {};
   const sessionId = payload?.session?.id;
-  const [sessionStatus, setSessionStatus] = useState(payload?.session?.status || 'REQUESTED');
+  const currentUserId = authSession?.user?.id;
+  const isListener = authSession?.user?.role === 'LISTENER';
+  const isDemoSession = Boolean(authSession?.isDemoUser || payload?.demoMode);
+  const [sessionStatus, setSessionStatus] = useState(normalizeChatStatus(payload?.session?.status));
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [lowBalanceWarning, setLowBalanceWarning] = useState('');
-  const [isChatReady, setIsChatReady] = useState(false);
   const [targetUserId, setTargetUserId] = useState(null);
+  const [remoteTyping, setRemoteTyping] = useState(false);
   const timerRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const demoReplyTimeoutRef = useRef(null);
+  const demoRemoteTypingTimeoutRef = useRef(null);
   const sessionEndedRef = useRef(false);
-  const lastAgoraTokenRef = useRef(payload?.agora?.token || '');
+  const flatListRef = useRef(null);
 
-  const currentUserId = authSession?.user?.id;
-  const isListener = authSession?.user?.role === 'LISTENER';
+  const title = useMemo(() => host?.name || 'Conversation', [host?.name]);
+  const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
+  const listenerId = payload?.session?.listenerId || host?.listenerId || null;
 
+  // Allow the first message to send immediately while history loads.
   useEffect(() => {
-    const userId = payload?.session?.userId;
-    const listenerId = payload?.session?.listenerId;
-
-    if (!currentUserId) {
+    if (targetUserId) {
       return;
     }
 
-    if (currentUserId === userId) {
-      setTargetUserId(listenerId || host?.listenerId || host?.userId || null);
-      return;
+    const sessionUserId = payload?.session?.userId || host?.userId || null;
+    const sessionListenerId = payload?.session?.listenerId || host?.listenerId || null;
+    const initialTarget = isListener ? sessionUserId : sessionListenerId;
+
+    if (initialTarget) {
+      setTargetUserId(initialTarget);
     }
-
-    setTargetUserId(userId || host?.userId || null);
-  }, [currentUserId, host?.listenerId, host?.userId, payload?.session?.listenerId, payload?.session?.userId]);
-
-  const title = useMemo(() => host?.name || 'Support Chat', [host?.name]);
+  }, [host?.listenerId, host?.userId, isListener, payload?.session?.listenerId, payload?.session?.userId, targetUserId]);
 
   const stopTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
   }, []);
 
-  const startTimer = useCallback(() => {
+  const startTimer = useCallback((initialSeconds = 0) => {
     stopTimer();
-    timerRef.current = setInterval(() => {
-      setElapsedSeconds((prev) => prev + 1);
-    }, 1000);
+    setElapsedSeconds(initialSeconds);
+    timerRef.current = setInterval(() => setElapsedSeconds((prev) => prev + 1), 1000);
   }, [stopTimer]);
 
-  const appendMessage = useCallback((message) => {
-    if (!message?.id) {
-      return;
-    }
-
+  const updateMessages = useCallback((updater) => {
     setMessages((prev) => {
-      if (prev.some((item) => item.id === message.id)) {
-        return prev;
-      }
-      return [...prev, message];
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      return Array.isArray(next) ? next : prev;
     });
   }, []);
 
-  const handleSessionEnded = useCallback(
-    (eventPayload) => {
-      if (eventPayload?.sessionId !== sessionId || sessionEndedRef.current) {
-        return;
-      }
+  const markMessagesRead = useCallback(async (messageIds = []) => {
+    if (!messageIds.length) return;
+    updateMessages((prev) => prev.map((item) => (messageIds.includes(item.id) ? { ...item, status: 'READ', readAt: item.readAt || new Date().toISOString() } : item)));
+    try {
+      await emitWithAck('chat_read', { sessionId, messageIds });
+    } catch (_error) {}
+  }, [sessionId, updateMessages]);
 
-      sessionEndedRef.current = true;
-      stopTimer();
-      setSessionStatus('ENDED');
+  const appendMessage = useCallback((message) => {
+    if (!message?.id) return;
+    updateMessages((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
+  }, [updateMessages]);
 
-      if (eventPayload?.reasonCode === 'LOW_BALANCE') {
-        Alert.alert(
-          'Insufficient Balance',
-          'You do not have sufficient balance. Please recharge your wallet to continue.',
-          [{ text: 'OK', onPress: () => navigation.goBack() }],
-        );
-      } else {
-        navigation.goBack();
-      }
-    },
-    [navigation, sessionId, stopTimer],
-  );
+  const emitTyping = useCallback((isTyping) => {
+    const socket = getRealtimeSocket();
+    if (socket && sessionId) socket.emit('chat_typing', { sessionId, isTyping: Boolean(isTyping) });
+  }, [sessionId]);
+
+  const onInputChange = (text) => {
+    setInputValue(text);
+    if (!sessionId || sessionStatus !== 'ACTIVE') return;
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    emitTyping(Boolean(text.trim()));
+    if (text.trim()) typingTimeoutRef.current = setTimeout(() => emitTyping(false), 1200);
+  };
+
+  const handleSessionEnded = useCallback((eventPayload) => {
+    if (eventPayload?.sessionId !== sessionId || sessionEndedRef.current) return;
+    sessionEndedRef.current = true;
+    emitTyping(false);
+    stopTimer();
+    setSessionStatus('ENDED');
+    if (eventPayload?.reasonCode === 'LOW_BALANCE') {
+      Alert.alert('Insufficient Balance', 'You do not have sufficient balance. Please recharge your wallet to continue.', [{ text: 'OK', onPress: () => navigation.goBack() }]);
+    } else {
+      navigation.goBack();
+    }
+  }, [emitTyping, navigation, sessionId, stopTimer]);
 
   useEffect(() => {
-    if (!sessionId || !authSession?.accessToken) {
+    if (isDemoSession) {
+      const bootstrapDemo = async () => {
+        if (!sessionId) {
+          Alert.alert('Chat unavailable', 'Unable to start demo chat right now.');
+          navigation.goBack();
+          return;
+        }
+
+        const history = await getChatMessages(sessionId);
+        const historyMessages = history?.messages || [];
+        const liveSession = history?.session || payload?.session || {};
+        const otherUserId = liveSession?.listenerId || host?.listenerId || null;
+
+        setMessages(historyMessages);
+        setSessionStatus(normalizeChatStatus(liveSession?.status || 'ACTIVE'));
+        setTargetUserId(otherUserId);
+
+        if (liveSession?.startedAt) {
+          startTimer(
+            Math.max(0, Math.floor((Date.now() - new Date(liveSession.startedAt).getTime()) / 1000)),
+          );
+        } else {
+          startTimer(0);
+        }
+      };
+
+      bootstrapDemo().catch((error) => {
+        Alert.alert('Chat unavailable', error?.message || 'Unable to start demo chat right now.');
+        navigation.goBack();
+      });
+
+      return () => {
+        emitTyping(false);
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+        if (demoReplyTimeoutRef.current) clearTimeout(demoReplyTimeoutRef.current);
+        if (demoRemoteTypingTimeoutRef.current) clearTimeout(demoRemoteTypingTimeoutRef.current);
+        stopTimer();
+      };
+    }
+
+    if (!authSession?.accessToken) {
+      resetToAuthEntry();
+      return undefined;
+    }
+    if (!sessionId) {
       Alert.alert('Chat unavailable', 'Unable to start chat session right now.');
       navigation.goBack();
       return undefined;
     }
-
     let socket = getRealtimeSocket();
-    if (!socket) {
-      socket = connectRealtimeSocket(authSession.accessToken);
-    }
+    if (!socket) socket = connectRealtimeSocket(authSession.accessToken);
 
     const bootstrap = async () => {
       try {
         const history = await getChatMessages(sessionId);
-        setMessages(history?.messages || []);
-        const sessionMeta = history?.session;
-        if (currentUserId && sessionMeta) {
-          if (currentUserId === sessionMeta.userId) {
-            setTargetUserId(sessionMeta.listenerId || null);
-          } else {
-            setTargetUserId(sessionMeta.userId || null);
-          }
-        }
-      } catch (_error) {
-        setMessages([]);
+        const historyMessages = history?.messages || [];
+        setMessages(historyMessages);
+        const liveSession = history?.session || payload?.session || {};
+        setSessionStatus(
+          normalizeChatStatus(liveSession?.status || payload?.session?.status || 'ACTIVE'),
+        );
+        const otherUserId = currentUserId === liveSession?.userId ? liveSession?.listenerId : liveSession?.userId;
+        setTargetUserId(otherUserId || host?.userId || null);
+        if (liveSession?.startedAt) startTimer(Math.max(0, Math.floor((Date.now() - new Date(liveSession.startedAt).getTime()) / 1000)));
+        const unreadIds = historyMessages.filter((item) => item?.receiverId === currentUserId && item?.status !== 'READ').map((item) => item.id);
+        markMessagesRead(unreadIds);
+      } catch (error) {
+        if (!isUnauthorizedApiError(error)) setMessages([]);
       }
 
       try {
         let chatToken = payload?.agora?.token;
-        let chatAppKey =
-          payload?.agora?.appKey ||
-          payload?.agora?.appId ||
-          AGORA_CHAT_APP_KEY;
-
+        let chatAppKey = payload?.agora?.appKey || payload?.agora?.appId || AGORA_CHAT_APP_KEY;
         if (!chatToken) {
           const refreshed = await refreshChatToken(sessionId);
           chatToken = refreshed?.agora?.token;
-          chatAppKey =
-            refreshed?.agora?.appKey ||
-            refreshed?.agora?.appId ||
-            chatAppKey;
+          chatAppKey = refreshed?.agora?.appKey || refreshed?.agora?.appId || chatAppKey;
         }
-
-        const chatInit = await initAgoraChatSession({
-          appKey: chatAppKey,
-          userId: currentUserId,
-          token: chatToken,
-          onMessagesReceived: () => {
-            // Backend socket remains source-of-truth for persisted message stream.
-          },
-          onTokenWillExpire: async () => {
-            try {
-              const refreshed = await refreshChatToken(sessionId);
-              lastAgoraTokenRef.current = refreshed?.agora?.token || lastAgoraTokenRef.current;
-              if (refreshed?.agora?.token) {
-                await renewAgoraChatToken(refreshed.agora.token);
-              }
-            } catch (_error) {
-              // Backend will end session if token refresh fails during active chat.
-            }
-          },
-          onTokenDidExpire: async () => {
-            try {
-              const refreshed = await refreshChatToken(sessionId);
-              lastAgoraTokenRef.current = refreshed?.agora?.token || lastAgoraTokenRef.current;
-              if (refreshed?.agora?.token) {
-                await renewAgoraChatToken(refreshed.agora.token);
-              }
-            } catch (_error) {
-              // Let session lifecycle events drive UI if token cannot be renewed.
-            }
-          },
-        });
-
-        setIsChatReady(Boolean(chatInit?.connected));
-      } catch (_error) {
-        setIsChatReady(false);
+        if (chatToken && chatAppKey && currentUserId) {
+          await initAgoraChatSession({
+            appKey: chatAppKey,
+            userId: currentUserId,
+            token: chatToken,
+            onMessagesReceived: () => {},
+            onTokenWillExpire: async () => {
+              try {
+                const refreshed = await refreshChatToken(sessionId);
+                if (refreshed?.agora?.token) await renewAgoraChatToken(refreshed.agora.token);
+              } catch (_error) {}
+            },
+            onTokenDidExpire: async () => {
+              try {
+                const refreshed = await refreshChatToken(sessionId);
+                if (refreshed?.agora?.token) await renewAgoraChatToken(refreshed.agora.token);
+              } catch (_error) {}
+            },
+          });
+        }
+      } catch (error) {
+        if (!isUnauthorizedApiError(error)) console.warn('[ChatSession] Agora chat init skipped', error?.message || 'init failed');
       }
-    };
-
-    const onChatAccepted = (eventPayload) => {
-      if (eventPayload?.sessionId !== sessionId) {
-        return;
-      }
-      setSessionStatus('ACTIVE');
-      startTimer();
     };
 
     const onChatStarted = (eventPayload) => {
-      if (eventPayload?.sessionId !== sessionId) {
-        return;
+      if (eventPayload?.sessionId === sessionId) {
+        setSessionStatus('ACTIVE');
+        startTimer(0);
       }
-      setSessionStatus('ACTIVE');
-      startTimer();
     };
-
     const onChatMessage = (message) => {
-      if (message?.sessionId !== sessionId) {
-        return;
-      }
+      if (message?.sessionId !== sessionId) return;
+      logChatDebug('messageReceived', {
+        sessionId: message?.sessionId || null,
+        messageId: message?.id || null,
+        senderId: message?.senderId || null,
+      });
       appendMessage(message);
+      if (message?.receiverId === currentUserId) markMessagesRead([message.id]);
     };
-
-    const onLowBalanceWarning = (eventPayload) => {
-      if (eventPayload?.sessionId !== sessionId) {
-        return;
-      }
-      setLowBalanceWarning(
-        eventPayload?.message || 'Low balance. Please recharge to avoid disconnection.',
-      );
-    };
+    const onTyping = (eventPayload) => { if (eventPayload?.sessionId === sessionId && eventPayload?.senderId !== currentUserId) setRemoteTyping(Boolean(eventPayload?.isTyping)); };
+    const onLowBalance = (eventPayload) => { if (eventPayload?.sessionId === sessionId) setLowBalanceWarning(eventPayload?.message || 'Low balance. Please recharge to avoid disconnection.'); };
 
     bootstrap();
-
-    socket.on('chat_accepted', onChatAccepted);
     socket.on('chat_started', onChatStarted);
     socket.on('chat_message', onChatMessage);
-    socket.on('chat_low_balance_warning', onLowBalanceWarning);
+    socket.on('chat_typing', onTyping);
+    socket.on('chat_low_balance_warning', onLowBalance);
     socket.on('chat_end_due_to_low_balance', handleSessionEnded);
     socket.on('chat_ended', handleSessionEnded);
-
     socket.emit('join_chat_session', { sessionId });
 
-    if (payload?.session?.status === 'ACTIVE') {
-      onChatStarted({ sessionId });
-    }
-
     return () => {
-      socket.off('chat_accepted', onChatAccepted);
+      emitTyping(false);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       socket.off('chat_started', onChatStarted);
       socket.off('chat_message', onChatMessage);
-      socket.off('chat_low_balance_warning', onLowBalanceWarning);
+      socket.off('chat_typing', onTyping);
+      socket.off('chat_low_balance_warning', onLowBalance);
       socket.off('chat_end_due_to_low_balance', handleSessionEnded);
       socket.off('chat_ended', handleSessionEnded);
       stopTimer();
       leaveAgoraChatSession().catch(() => {});
     };
-  }, [
-    appendMessage,
-    authSession?.accessToken,
-    currentUserId,
-    handleSessionEnded,
-    navigation,
-    payload?.agora?.token,
-    payload?.session?.status,
-    sessionId,
-    startTimer,
-    stopTimer,
-  ]);
+  }, [appendMessage, authSession?.accessToken, currentUserId, emitTyping, handleSessionEnded, host?.listenerId, host?.userId, isDemoSession, markMessagesRead, navigation, payload?.agora?.appId, payload?.agora?.appKey, payload?.agora?.token, payload?.session, sessionId, startTimer, stopTimer]);
+
+  useEffect(() => {
+    flatListRef.current?.scrollToEnd({ animated: true });
+  }, [messages, remoteTyping]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const onKeyboardShow = (event) => {
+      logChatDebug('keyboardShown', {
+        height: event?.endCoordinates?.height ?? null,
+      });
+
+      // Keep the latest message visible above the keyboard.
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 60);
+      });
+    };
+
+    const onKeyboardHide = () => {
+      logChatDebug('keyboardHidden', {});
+    };
+
+    const showSubscription = Keyboard.addListener(showEvent, onKeyboardShow);
+    const hideSubscription = Keyboard.addListener(hideEvent, onKeyboardHide);
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   const onSendMessage = async () => {
     const trimmed = inputValue.trim();
-    if (!trimmed || !targetUserId) {
-      return;
+    if (!trimmed || !targetUserId) return;
+    const normalizedStatus = String(sessionStatus || '').toUpperCase();
+    if (['ENDED', 'CANCELLED', 'REJECTED'].includes(normalizedStatus)) {
+      return Alert.alert('Chat ended', 'This conversation is no longer active.');
     }
 
-    if (sessionStatus !== 'ACTIVE') {
-      Alert.alert('Chat not active', 'Please wait for host to accept your chat request.');
+    if (isDemoSession) {
+      const sent = await addDemoChatMessage(sessionId, {
+        senderId: currentUserId || 'demo-user-1',
+        receiverId: targetUserId,
+        content: trimmed,
+        status: 'READ',
+      });
+
+      appendMessage(sent);
+      setInputValue('');
+      setRemoteTyping(false);
+      emitTyping(false);
+
+      if (demoReplyTimeoutRef.current) clearTimeout(demoReplyTimeoutRef.current);
+      if (demoRemoteTypingTimeoutRef.current) clearTimeout(demoRemoteTypingTimeoutRef.current);
+
+      demoRemoteTypingTimeoutRef.current = setTimeout(() => {
+        setRemoteTyping(true);
+      }, 450);
+
+      demoReplyTimeoutRef.current = setTimeout(async () => {
+        const reply = await addDemoChatReply(
+          sessionId,
+          'Demo reply: you can explore the chat UI safely without live billing or OTP.',
+        );
+        appendMessage(reply);
+        setRemoteTyping(false);
+      }, 1500);
+
       return;
     }
 
     try {
-      const sent = await emitWithAck('chat_message', {
+      logChatDebug('messageSendStart', {
         sessionId,
         receiverId: targetUserId,
-        content: trimmed,
-        messageType: 'text',
+        contentLength: trimmed.length,
       });
+      const sent = await emitWithAck('chat_message', { sessionId, receiverId: targetUserId, content: trimmed, messageType: 'text' });
       appendMessage(sent);
-      setInputValue('');
-    } catch (error) {
-      if (error?.code === 'INSUFFICIENT_BALANCE') {
-        Alert.alert(
-          'Insufficient Balance',
-          'You do not have sufficient balance. Please recharge your wallet to continue.',
-        );
-      } else {
-        Alert.alert('Message failed', error?.message || 'Unable to send message right now.');
+      logChatDebug('messageSendSuccess', {
+        sessionId,
+        messageId: sent?.id || null,
+      });
+      if (normalizedStatus !== 'ACTIVE') {
+        setSessionStatus('ACTIVE');
       }
+      setInputValue('');
+      setRemoteTyping(false);
+      emitTyping(false);
+    } catch (error) {
+      logChatDebug('messageSendFailure', {
+        sessionId,
+        code: error?.code || error?.response?.data?.code || null,
+        message: error?.message || 'Unknown error',
+      });
+      if (isUnauthorizedApiError(error)) return;
+      Alert.alert(error?.code === 'INSUFFICIENT_BALANCE' ? 'Insufficient Balance' : 'Message failed', error?.message || 'Unable to send message right now.');
     }
   };
 
   const onEndChat = async () => {
-    const endReason = isListener ? 'LISTENER_ENDED' : 'USER_ENDED';
+    if (isDemoSession) {
+      emitTyping(false);
+      stopTimer();
+      await endChatSession(sessionId, isListener ? 'LISTENER_ENDED' : 'USER_ENDED');
+      navigation.goBack();
+      return;
+    }
+
     try {
-      await endChatSession(sessionId, endReason);
-      await emitWithAck('chat_ended', { sessionId, endReason }).catch(() => {});
+      await endChatSession(sessionId, isListener ? 'LISTENER_ENDED' : 'USER_ENDED');
+      await emitWithAck('chat_ended', { sessionId, endReason: isListener ? 'LISTENER_ENDED' : 'USER_ENDED' }).catch(() => {});
     } catch (_error) {
-      // Keep teardown flow resilient even when network call fails.
     } finally {
+      emitTyping(false);
       stopTimer();
       await leaveAgoraChatSession().catch(() => {});
       navigation.goBack();
     }
   };
 
-  const renderMessage = ({ item }) => {
-    const isMine = item?.senderId === currentUserId;
-    return (
-      <View
-        style={[
-          styles.messageBubble,
-          isMine ? styles.messageBubbleMine : styles.messageBubbleOther,
-        ]}
-      >
-        <Text style={styles.messageText}>{item?.content || ''}</Text>
-      </View>
-    );
+  const onStartCall = async () => {
+    if (isListener || !listenerId) return Alert.alert('Voice call unavailable', 'Voice call can be started from the user side only.');
+    try {
+      const permissionResult = await requestCallAudioPermissions();
+      logChatDebug('microphonePermissionPreflight', {
+        listenerId,
+        granted: permissionResult?.granted === true,
+        permissions: permissionResult?.permissions || null,
+        source: 'ChatSessionScreen.onStartCall',
+      });
+      if (!permissionResult?.granted) {
+        Alert.alert(
+          'Microphone permission needed',
+          'Enable microphone permission to start a voice call.',
+        );
+        return;
+      }
+
+      logChatDebug('callRequestStart', {
+        listenerId,
+      });
+      const callPayload = await requestCall(listenerId);
+      logChatDebug('callRequestSuccess', {
+        sessionId: callPayload?.session?.id || null,
+        listenerId,
+      });
+      navigation.navigate('CallSession', { callPayload, host });
+    } catch (error) {
+      logChatDebug('callRequestFailure', {
+        listenerId,
+        message: error?.response?.data?.message || error?.message || 'Unknown error',
+      });
+      if (!isUnauthorizedApiError(error)) Alert.alert('Call blocked', error?.response?.data?.message || error?.message || 'Unable to start call right now.');
+    }
+  };
+
+  const subtitle = remoteTyping ? 'Typing...' : sessionStatus === 'ACTIVE' ? 'Online' : sessionStatus === 'ENDED' ? 'Conversation ended' : isDemoSession ? 'Demo session ready' : 'Waiting to connect';
+  const onOpenMenu = () => {
+    Alert.alert(title, 'Choose an action for this conversation.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'End chat', style: 'destructive', onPress: onEndChat },
+    ]);
   };
 
   return (
-    <LinearGradient colors={['#05020D', '#0B0316', '#180523']} style={styles.container}>
+    <LinearGradient colors={['#08040F', '#12071A', '#1A0A24']} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
+          enabled
         >
           <View style={styles.header}>
-            <TouchableOpacity style={styles.headerButton} onPress={onEndChat} activeOpacity={0.85}>
-              <Ionicons name="chevron-back" size={22} color={theme.colors.textPrimary} />
+            <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
+              <Ionicons name="chevron-back" size={18} color={theme.colors.textPrimary} />
             </TouchableOpacity>
-
-            <View style={styles.headerTitleWrap}>
-              <AppLogo size="xs" withCard={false} style={styles.headerLogo} />
-              <Text style={styles.headerTitle}>{title}</Text>
-              <Text style={styles.headerSubtitle}>
-                {sessionStatus === 'ACTIVE'
-                  ? `Live - ${formatDuration(elapsedSeconds)}`
-                  : 'Waiting for host response...'}
-              </Text>
+            <TouchableOpacity style={styles.headerMain} activeOpacity={0.9}>
+              <Image source={avatar} style={styles.headerAvatar} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.headerName}>{title}</Text>
+                <View style={styles.statusRow}>
+                  <View style={[styles.statusDot, sessionStatus === 'ACTIVE' || remoteTyping ? styles.statusDotOn : styles.statusDotOff]} />
+                  <Text style={styles.headerStatus}>{subtitle}</Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+            <View style={styles.headerActions}>
+              <TouchableOpacity style={styles.iconBtn} onPress={onStartCall} activeOpacity={0.85}><Ionicons name="call-outline" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
+              <TouchableOpacity style={styles.iconBtn} onPress={() => Alert.alert('Video calling', 'Video calls are not available yet.')} activeOpacity={0.85}><Ionicons name="videocam-outline" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
+              <TouchableOpacity style={styles.iconBtn} onPress={onOpenMenu} activeOpacity={0.85}><Ionicons name="ellipsis-vertical" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
             </View>
-
-            <TouchableOpacity style={styles.headerButton} onPress={onEndChat} activeOpacity={0.85}>
-              <Ionicons name="close" size={20} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
           </View>
 
-          {lowBalanceWarning ? (
-            <View style={styles.warningBox}>
-              <Ionicons name="alert-circle" size={16} color={theme.colors.warning} />
-              <Text style={styles.warningText}>{lowBalanceWarning}</Text>
+          {lowBalanceWarning ? <View style={styles.warning}><Ionicons name="alert-circle" size={16} color={theme.colors.warning} /><Text style={styles.warningText}>{lowBalanceWarning}</Text></View> : null}
+
+          <View style={styles.chatSurface}>
+            <View style={styles.pattern}>
+              {PATTERN.map((item, index) => <View key={`pattern-${index}`} style={[styles.patternBubble, { top: item.t, left: item.l, width: item.s, height: item.s, borderRadius: item.s / 2 }]} />)}
             </View>
-          ) : null}
 
-          {!isChatReady ? (
-            <Text style={styles.infoBanner}>
-              Agora chat not configured on client yet. Socket messaging is active.
-            </Text>
-          ) : null}
+            <FlatList
+              ref={flatListRef}
+              style={styles.messageListView}
+              data={messages}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => {
+                const mine = item?.senderId === currentUserId;
+                return (
+                  <View style={[styles.messageWrap, mine ? styles.messageWrapMine : styles.messageWrapOther]}>
+                    <View style={[styles.messageBubble, mine ? styles.messageMine : styles.messageOther]}>
+                      <Text style={styles.messageText}>{item?.content || ''}</Text>
+                      <Text style={styles.messageTime}>{time(item?.createdAt)}</Text>
+                    </View>
+                  </View>
+                );
+              }}
+              ListEmptyComponent={<View style={styles.emptyWrap}><Text style={styles.emptyText}>Start conversation...</Text><Text style={styles.emptySub}>{sessionStatus === 'ACTIVE' ? 'Send a message to begin.' : 'Messages will appear here as soon as the chat goes live.'}</Text></View>}
+              ListFooterComponent={remoteTyping ? <View style={styles.typingWrap}><View style={styles.typingBubble}><Text style={styles.typingText}>{title} is typing...</Text></View></View> : <View style={{ height: 8 }} />}
+              contentContainerStyle={[styles.messageList, !messages.length && !remoteTyping ? styles.messageListEmpty : null]}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+            />
+          </View>
 
-          <FlatList
-            data={messages}
-            keyExtractor={(item) => item.id}
-            renderItem={renderMessage}
-            contentContainerStyle={styles.messagesContent}
-            showsVerticalScrollIndicator={false}
-          />
+          <View style={styles.footerMeta}>
+            <Text style={styles.footerStatus}>{sessionStatus === 'ACTIVE' ? `Live for ${duration(elapsedSeconds)}` : subtitle}</Text>
+          </View>
 
           <View style={styles.inputRow}>
             <TextInput
               value={inputValue}
-              onChangeText={setInputValue}
-              placeholder="Type your message..."
-              placeholderTextColor="rgba(255,255,255,0.45)"
+              onChangeText={onInputChange}
+              placeholder="Message..."
+              placeholderTextColor="rgba(255,255,255,0.34)"
               style={styles.input}
               multiline
+              onFocus={() => {
+                requestAnimationFrame(() => {
+                  flatListRef.current?.scrollToEnd({ animated: true });
+                });
+              }}
             />
-            <TouchableOpacity style={styles.sendButton} onPress={onSendMessage} activeOpacity={0.85}>
+            <TouchableOpacity style={[styles.sendBtn, !inputValue.trim() && styles.sendBtnDisabled]} onPress={onSendMessage} activeOpacity={0.85}>
               <Ionicons name="send" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
@@ -405,129 +545,20 @@ const ChatSessionScreen = ({ navigation, route }) => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  safeArea: {
-    flex: 1,
-  },
-  flex: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingBottom: 18,
-  },
-  header: {
-    marginTop: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  headerButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitleWrap: {
-    flex: 1,
-    marginHorizontal: 10,
-    alignItems: 'center',
-  },
-  headerLogo: {
-    marginBottom: 4,
-  },
-  headerTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  headerSubtitle: {
-    marginTop: 1,
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-  },
-  warningBox: {
-    marginTop: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 184, 0, 0.12)',
-    borderColor: 'rgba(255, 184, 0, 0.4)',
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
-  },
-  warningText: {
-    color: theme.colors.warning,
-    fontSize: 13,
-    flexShrink: 1,
-  },
-  infoBanner: {
-    marginTop: 10,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    fontSize: 12,
-  },
-  messagesContent: {
-    paddingTop: 16,
-    paddingBottom: 20,
-    gap: 8,
-  },
-  messageBubble: {
-    maxWidth: '78%',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  messageBubbleMine: {
-    alignSelf: 'flex-end',
-    backgroundColor: 'rgba(255, 42, 163, 0.28)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 42, 163, 0.6)',
-  },
-  messageBubbleOther: {
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-  },
-  messageText: {
-    color: theme.colors.textPrimary,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 10,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  input: {
-    flex: 1,
-    color: theme.colors.textPrimary,
-    fontSize: 14,
-    maxHeight: 100,
-    paddingVertical: 4,
-  },
-  sendButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.magenta,
-  },
+  container: { flex: 1 }, safeArea: { flex: 1 }, flex: { flex: 1, minHeight: 0, paddingHorizontal: 14, paddingBottom: 12 },
+  header: { marginTop: 6, flexDirection: 'row', alignItems: 'center' }, headerMain: { flex: 1, flexDirection: 'row', alignItems: 'center' }, headerAvatar: { width: 44, height: 44, borderRadius: 22, borderWidth: 1.5, borderColor: theme.colors.magenta, marginRight: 10 }, headerName: { color: theme.colors.textPrimary, fontSize: 18, fontWeight: '700' }, statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 }, statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 }, statusDotOn: { backgroundColor: theme.colors.success }, statusDotOff: { backgroundColor: 'rgba(255,255,255,0.28)' }, headerStatus: { color: theme.colors.textSecondary, fontSize: 12 },
+  headerActions: { flexDirection: 'row', gap: 8 }, iconBtn: { width: 38, height: 38, borderRadius: 19, borderWidth: 1, borderColor: theme.colors.borderSoft, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
+  warning: { marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,184,0,0.4)', backgroundColor: 'rgba(255,184,0,0.12)', paddingHorizontal: 12, paddingVertical: 8 }, warningText: { color: theme.colors.warning, fontSize: 13, flex: 1 },
+  chatSurface: { flex: 1, minHeight: 0, marginTop: 14, borderRadius: 28, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', backgroundColor: 'rgba(8,15,26,0.82)' }, pattern: { ...StyleSheet.absoluteFillObject }, patternBubble: { position: 'absolute', borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)', backgroundColor: 'rgba(255,255,255,0.015)' },
+  messageListView: { flex: 1, minHeight: 0 },
+  messageList: { paddingHorizontal: 12, paddingTop: 16, paddingBottom: 18 }, messageListEmpty: { flexGrow: 1, justifyContent: 'center' }, messageWrap: { marginBottom: 10 }, messageWrapMine: { alignItems: 'flex-end' }, messageWrapOther: { alignItems: 'flex-start' },
+  messageBubble: { maxWidth: '82%', borderRadius: 18, paddingHorizontal: 13, paddingVertical: 9 }, messageMine: { backgroundColor: 'rgba(255,42,163,0.24)', borderWidth: 1, borderColor: 'rgba(255,42,163,0.55)' }, messageOther: { backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  messageText: { color: theme.colors.textPrimary, fontSize: 14, lineHeight: 20 }, messageTime: { marginTop: 5, color: 'rgba(255,255,255,0.46)', fontSize: 11, alignSelf: 'flex-end' },
+  emptyWrap: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }, emptyText: { color: theme.colors.textPrimary, fontSize: 18, fontWeight: '700' }, emptySub: { marginTop: 8, color: theme.colors.textSecondary, fontSize: 13, lineHeight: 20, textAlign: 'center' },
+  typingWrap: { alignItems: 'flex-start', marginTop: 6 }, typingBubble: { borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }, typingText: { color: theme.colors.textSecondary, fontSize: 12 },
+  footerMeta: { marginTop: 10, alignItems: 'center' }, footerStatus: { color: theme.colors.textSecondary, fontSize: 12 },
+  inputRow: { marginTop: 10, marginBottom: 8, flexDirection: 'row', alignItems: 'center', borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(9,10,20,0.95)', paddingLeft: 16, paddingRight: 8, paddingVertical: 8 }, input: { flex: 1, color: theme.colors.textPrimary, fontSize: 15, maxHeight: 100, paddingVertical: 6 },
+  sendBtn: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.magenta }, sendBtnDisabled: { opacity: 0.45 },
 });
 
 export default ChatSessionScreen;
-

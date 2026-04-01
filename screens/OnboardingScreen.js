@@ -14,7 +14,6 @@ import { StatusBar } from 'expo-status-bar';
 import GradientButton from '../components/GradientButton';
 import { onboardingSlides } from '../constants/mockData';
 import theme from '../constants/theme';
-import AppLogo from '../components/AppLogo';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -30,8 +29,6 @@ const OnboardingScreen = ({ navigation }) => {
   const renderItem = ({ item }) => {
     return (
       <View style={[styles.slide, { width: SCREEN_WIDTH }]}>
-        <AppLogo size="sm" style={styles.logoCard} />
-
         <Text style={styles.title}>{item.title}</Text>
         <Text style={styles.subtitle}>{item.subtitle}</Text>
 
@@ -148,10 +145,6 @@ const styles = StyleSheet.create({
   slide: {
     paddingHorizontal: 20,
     paddingTop: 12,
-  },
-  logoCard: {
-    alignSelf: 'flex-start',
-    marginBottom: 16,
   },
   title: {
     color: theme.colors.textPrimary,

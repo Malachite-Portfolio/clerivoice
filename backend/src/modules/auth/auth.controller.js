@@ -12,6 +12,15 @@ const sendOtp = asyncHandler(async (req, res) => {
   return successResponse(res, data, 'OTP sent successfully');
 });
 
+const sendListenerOtp = asyncHandler(async (req, res) => {
+  logger.info('[Auth] sendListenerOtp request received', {
+    keys: Object.keys(req.body || {}),
+    ipAddress: req.ip,
+  });
+  const data = await authService.sendListenerOtp(req.body);
+  return successResponse(res, data, 'Listener OTP sent successfully');
+});
+
 const verifyOtp = asyncHandler(async (req, res) => {
   logger.info('[Auth] verifyOtp request received', {
     keys: Object.keys(req.body || {}),
@@ -24,6 +33,20 @@ const verifyOtp = asyncHandler(async (req, res) => {
   });
 
   return successResponse(res, data, 'OTP verified successfully');
+});
+
+const verifyListenerOtp = asyncHandler(async (req, res) => {
+  logger.info('[Auth] verifyListenerOtp request received', {
+    keys: Object.keys(req.body || {}),
+    ipAddress: req.ip,
+  });
+  const data = await authService.verifyListenerOtp({
+    ...req.body,
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+  });
+
+  return successResponse(res, data, 'Listener OTP verified successfully');
 });
 
 const loginUser = asyncHandler(async (req, res) => {
@@ -93,7 +116,9 @@ const logout = asyncHandler(async (req, res) => {
 
 module.exports = {
   sendOtp,
+  sendListenerOtp,
   verifyOtp,
+  verifyListenerOtp,
   loginUser,
   login,
   loginListener,

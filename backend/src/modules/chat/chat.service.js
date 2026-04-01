@@ -1,6 +1,8 @@
 const { prisma } = require('../../config/prisma');
+const { logger } = require('../../config/logger');
 const { AppError } = require('../../utils/appError');
 const sessionGuardService = require('../../services/sessionGuard.service');
+const pushNotificationService = require('../../services/pushNotification.service');
 const {
   emitHostStatusChanged,
   emitEvent,
@@ -19,6 +21,15 @@ const setRealtimeDependencies = ({ socketServer, sessionBillingManager }) => {
 };
 
 const getChatChannelName = (sessionId) => agoraService.buildChatChannelName(sessionId);
+
+const emitChatRealtime = (session, eventName, payload) => {
+  if (!io || !session) {
+    return;
+  }
+
+  io.to(`user:${session.userId}`).emit(eventName, payload);
+  io.to(`user:${session.listenerId}`).emit(eventName, payload);
+};
 
 const assertChatParticipant = (session, userId) => {
   if (session.userId !== userId && session.listenerId !== userId) {
@@ -100,10 +111,10 @@ const finalizeChatSession = async ({
 
   if (io) {
     if (reasonCode === 'LOW_BALANCE') {
-      io.to(`session:chat:${session.id}`).emit('chat_end_due_to_low_balance', payload);
+      emitChatRealtime(session, 'chat_end_due_to_low_balance', payload);
     }
-    io.to(`session:chat:${session.id}`).emit('chat_ended', payload);
-    io.to(`session:chat:${session.id}`).emit('session_ended', {
+    emitChatRealtime(session, 'chat_ended', payload);
+    emitChatRealtime(session, 'session_ended', {
       ...payload,
       sessionType: 'chat',
     });
@@ -119,7 +130,8 @@ const requestChat = async ({ userId, listenerId }) => {
     data: {
       userId,
       listenerId,
-      status: 'REQUESTED',
+      status: 'ACTIVE',
+      startedAt: new Date(),
       ratePerMinute: check.listener.chatRatePerMinute,
     },
     include: {
@@ -145,18 +157,33 @@ const requestChat = async ({ userId, listenerId }) => {
     userId,
   });
 
-  if (io) {
-    io.to(`user:${listenerId}`).emit('chat_request', {
-      sessionId: session.id,
-      channelName,
-      userId,
-      listenerId,
-      requester: session.user,
-      listener: session.listener,
-      ratePerMinute: Number(session.ratePerMinute),
-      requestedAt: session.requestedAt,
-    });
+  const listenerState = await prisma.listenerProfile.update({
+    where: { userId: session.listenerId },
+    data: { availability: 'BUSY' },
+  });
+
+  emitHostStatusChanged({
+    listenerId: session.listenerId,
+    status: 'BUSY',
+    availability: 'BUSY',
+    isEnabled: listenerState.isEnabled,
+    updatedAt: listenerState.updatedAt,
+    reason: 'CHAT_ACTIVE',
+  });
+
+  if (billingManager) {
+    billingManager.startChatBilling(session.id, { runImmediately: true });
   }
+
+  emitChatRealtime(session, 'chat_started', {
+    sessionId: session.id,
+    channelName,
+    status: session.status,
+    startedAt: session.startedAt,
+    requester: session.user,
+    listener: session.listener,
+    ratePerMinute: Number(session.ratePerMinute),
+  });
 
   return {
     session: {
@@ -238,14 +265,14 @@ const acceptChat = async ({ listenerId, sessionId }) => {
   });
 
   if (io) {
-    io.to(`session:chat:${sessionId}`).emit('chat_accepted', {
+    emitChatRealtime(session, 'chat_accepted', {
       sessionId,
       channelName,
       status: updated.status,
       startedAt: updated.startedAt,
     });
 
-    io.to(`session:chat:${sessionId}`).emit('chat_started', {
+    emitChatRealtime(session, 'chat_started', {
       sessionId,
       channelName,
       startedAt: updated.startedAt,
@@ -281,12 +308,10 @@ const rejectChat = async ({ listenerId, sessionId, reason }) => {
     force: true,
   });
 
-  if (io) {
-    io.to(`session:chat:${sessionId}`).emit('chat_rejected', {
-      sessionId,
-      reason: reason || 'Chat rejected by listener',
-    });
-  }
+  emitChatRealtime(session, 'chat_rejected', {
+    sessionId,
+    reason: reason || 'Chat rejected by listener',
+  });
 
   return updated;
 };
@@ -423,7 +448,27 @@ const getChatMessages = async ({ userId, sessionId }) => {
 };
 
 const sendMessage = async ({ sessionId, senderId, receiverId, messageType = 'text', content }) => {
-  const session = await prisma.chatSession.findUnique({ where: { id: sessionId } });
+  const session = await prisma.chatSession.findUnique({
+    where: { id: sessionId },
+    include: {
+      user: {
+        select: {
+          id: true,
+          role: true,
+          displayName: true,
+          profileImageUrl: true,
+        },
+      },
+      listener: {
+        select: {
+          id: true,
+          role: true,
+          displayName: true,
+          profileImageUrl: true,
+        },
+      },
+    },
+  });
 
   if (!session) {
     throw new AppError('Chat session not found', 404, 'CHAT_SESSION_NOT_FOUND');
@@ -431,7 +476,59 @@ const sendMessage = async ({ sessionId, senderId, receiverId, messageType = 'tex
 
   assertChatParticipant(session, senderId);
 
-  if (session.status !== 'ACTIVE') {
+  // Contract: chat should not require an accept/reject handshake.
+  // If legacy sessions still exist in REQUESTED state, auto-activate on first message.
+  if (session.status === 'REQUESTED') {
+    try {
+      await sessionGuardService.canStartChat({
+        userId: session.userId,
+        listenerId: session.listenerId,
+      });
+    } catch (error) {
+      await finalizeChatSession({
+        session,
+        status: 'CANCELLED',
+        endReason: 'CANCELLED',
+        reasonCode: 'CHAT_ACTIVATION_BLOCKED',
+        endedBy: senderId,
+        force: true,
+      });
+      throw error;
+    }
+
+    const activated = await prisma.chatSession.update({
+      where: { id: session.id },
+      data: {
+        status: 'ACTIVE',
+        startedAt: session.startedAt || new Date(),
+      },
+    });
+
+    const listenerState = await prisma.listenerProfile.update({
+      where: { userId: session.listenerId },
+      data: { availability: 'BUSY' },
+    });
+
+    emitHostStatusChanged({
+      listenerId: session.listenerId,
+      status: 'BUSY',
+      availability: 'BUSY',
+      isEnabled: listenerState.isEnabled,
+      updatedAt: listenerState.updatedAt,
+      reason: 'CHAT_ACTIVE',
+    });
+
+    if (billingManager) {
+      billingManager.startChatBilling(session.id, { runImmediately: true });
+    }
+
+    emitChatRealtime(session, 'chat_started', {
+      sessionId: session.id,
+      channelName: getChatChannelName(session.id),
+      status: 'ACTIVE',
+      startedAt: activated.startedAt,
+    });
+  } else if (session.status !== 'ACTIVE') {
     throw new AppError('Chat session is not active', 400, 'CHAT_NOT_ACTIVE');
   }
 
@@ -450,6 +547,31 @@ const sendMessage = async ({ sessionId, senderId, receiverId, messageType = 'tex
     io.to(`user:${receiverId}`).emit('chat_message', message);
     io.to(`session:chat:${sessionId}`).emit('chat_message', message);
   }
+
+  const senderProfile = senderId === session.userId ? session.user : session.listener;
+  const receiverRole = receiverId === session.listenerId ? 'LISTENER' : 'USER';
+
+  Promise.resolve()
+    .then(() =>
+      pushNotificationService.sendChatMessagePush({
+        receiverId,
+        receiverRole,
+        sessionId,
+        senderId,
+        senderName: senderProfile?.displayName || 'New message',
+        senderAvatar: senderProfile?.profileImageUrl || null,
+        sessionUserId: session.userId,
+        sessionListenerId: session.listenerId,
+        preview: String(content || '').trim().slice(0, 120),
+      })
+    )
+    .catch((error) => {
+      logger.warn('[Push] chat message notification failed', {
+        sessionId,
+        receiverId,
+        message: error?.message || 'Unknown error',
+      });
+    });
 
   return message;
 };
