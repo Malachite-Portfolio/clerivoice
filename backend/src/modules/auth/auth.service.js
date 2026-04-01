@@ -81,6 +81,22 @@ const buildPhoneVariants = (phone) => {
 const DEMO_LISTENER_ID = '000000101';
 const DEMO_LISTENER_PHONE = '+910000000101';
 const DEMO_LISTENER_PASSWORD = '12345678';
+const FIXED_TEST_USER_PHONES = Object.freeze([
+  '+910000000201',
+  '+910000000202',
+  '+910000000203',
+  '+910000000204',
+  '+910000000205',
+  '+910000000206',
+]);
+const FIXED_TEST_LISTENER_PHONES = Object.freeze([
+  '+910000000101',
+  '+910000000102',
+  '+910000000103',
+  '+910000000104',
+  '+910000000105',
+  '+910000000106',
+]);
 const maskIdentity = (value) => {
   const input = String(value || '').trim();
   if (!input) return '';
@@ -92,14 +108,8 @@ const maskIdentity = (value) => {
   return `${input.slice(0, 2)}***${input.slice(-2)}`;
 };
 
-const parseDelimitedPhoneList = (...values) =>
-  values
-    .flatMap((value) => String(value || '').split(','))
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-
-const buildAllowedPhoneSet = (primaryPhone, ...extraPhoneLists) => {
-  const values = [primaryPhone, ...parseDelimitedPhoneList(...extraPhoneLists)]
+const buildAllowedPhoneSet = (...phones) => {
+  const values = phones
     .flatMap((value) => buildPhoneVariants(value))
     .map((value) => String(value || '').trim())
     .filter(Boolean);
@@ -108,14 +118,8 @@ const buildAllowedPhoneSet = (primaryPhone, ...extraPhoneLists) => {
 };
 
 const isTestAuthEnabled = () => env.ENABLE_TEST_AUTH;
-const getAllowedTestUserPhones = () =>
-  buildAllowedPhoneSet(env.TEST_USER_PHONE, env.TEST_USER_PHONES, env.TEST_USER_NUMBERS);
-const getAllowedTestListenerPhones = () =>
-  buildAllowedPhoneSet(
-    env.TEST_LISTENER_PHONE,
-    env.TEST_LISTENER_PHONES,
-    env.TEST_LISTENER_NUMBERS
-  );
+const getAllowedTestUserPhones = () => buildAllowedPhoneSet(...FIXED_TEST_USER_PHONES);
+const getAllowedTestListenerPhones = () => buildAllowedPhoneSet(...FIXED_TEST_LISTENER_PHONES);
 const isTestUserPhone = (phone) =>
   getAllowedTestUserPhones().has(normalizePhone(phone)) ||
   buildPhoneVariants(phone).some((variant) => getAllowedTestUserPhones().has(variant));
