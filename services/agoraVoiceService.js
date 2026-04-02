@@ -3,6 +3,8 @@ import {
   AudioScenarioType,
   ChannelProfileType,
   ClientRoleType,
+  RenderModeType,
+  VideoSourceType,
   createAgoraRtcEngine,
 } from 'react-native-agora';
 import { Platform } from 'react-native';
@@ -31,6 +33,8 @@ let pendingLeaveTimeout = null;
 let leaveEventHandler = null;
 let currentMicMuted = false;
 let currentSpeakerOn = false;
+let currentCallType = 'audio';
+let currentCameraEnabled = false;
 let foregroundServiceSessionId = null;
 
 const logAgoraVoice = (label, payload) => {
@@ -191,6 +195,8 @@ export const getAgoraVoiceSessionState = () => ({
   isLeaving: Boolean(pendingLeave),
   currentMicMuted,
   currentSpeakerOn,
+  currentCallType,
+  currentCameraEnabled,
   foregroundServiceSessionId,
 });
 
@@ -203,6 +209,7 @@ export const joinAgoraVoiceChannel = async ({
   channelName,
   uid,
   sessionId,
+  callType = 'audio',
   onJoinSuccess,
   onUserJoined,
   onUserOffline,
@@ -210,6 +217,9 @@ export const joinAgoraVoiceChannel = async ({
   onTokenWillExpire,
   onLocalAudioStateChanged,
   onRemoteAudioStateChanged,
+  onFirstLocalVideoFrame,
+  onFirstRemoteVideoFrame,
+  onRemoteVideoStateChanged,
   onAudioRoutingChanged,
   onAudioVolumeIndication,
 }) => {
@@ -218,7 +228,11 @@ export const joinAgoraVoiceChannel = async ({
   }
 
   const engine = ensureRtcEngine(appId);
+  const normalizedCallType =
+    String(callType || '').trim().toLowerCase() === 'video' ? 'video' : 'audio';
   currentMicMuted = false;
+  currentCallType = normalizedCallType;
+  currentCameraEnabled = normalizedCallType === 'video';
 
   if (pendingLeave) {
     logAgoraVoice('joinAwaitingLeave', {
@@ -259,7 +273,10 @@ export const joinAgoraVoiceChannel = async ({
 
   await ensureOngoingCallService({
     sessionId,
-    subtitle: 'Voice call is connecting',
+    subtitle:
+      normalizedCallType === 'video'
+        ? 'Video call is connecting'
+        : 'Voice call is connecting',
   });
 
   ensureVoiceStreamsActive({
@@ -282,7 +299,10 @@ export const joinAgoraVoiceChannel = async ({
         });
         ensureOngoingCallService({
           sessionId,
-          subtitle: 'Voice call is active',
+          subtitle:
+            normalizedCallType === 'video'
+              ? 'Video call is active'
+              : 'Voice call is active',
         }).catch(() => {});
         onJoinSuccess?.();
         resolve(0);
@@ -304,6 +324,25 @@ export const joinAgoraVoiceChannel = async ({
       },
       onRemoteAudioStateChanged: (_connection, remoteUid, state, reason) => {
         onRemoteAudioStateChanged?.({ remoteUid, state, reason });
+      },
+      onFirstLocalVideoFrame: (_connection, width, height, elapsed) => {
+        onFirstLocalVideoFrame?.({ width, height, elapsed });
+      },
+      onFirstRemoteVideoFrame: (_connection, remoteUid, width, height, elapsed) => {
+        onFirstRemoteVideoFrame?.({
+          remoteUid,
+          width,
+          height,
+          elapsed,
+        });
+      },
+      onRemoteVideoStateChanged: (_connection, remoteUid, state, reason, elapsed) => {
+        onRemoteVideoStateChanged?.({
+          remoteUid,
+          state,
+          reason,
+          elapsed,
+        });
       },
       onAudioRoutingChanged: (routing) => {
         onAudioRoutingChanged?.({ routing });
@@ -329,12 +368,40 @@ export const joinAgoraVoiceChannel = async ({
       channelName,
       uid: Number(uid) || 0,
       hasToken: Boolean(token),
+      callType: normalizedCallType,
       recoveringRejectedJoin,
     });
 
     try {
       // Ensure local mic capture + remote playback are fully enabled for this call.
       engine.setDefaultAudioRouteToSpeakerphone(false);
+
+      if (normalizedCallType === 'video') {
+        engine.enableVideo();
+        engine.enableLocalVideo(true);
+        engine.muteLocalVideoStream(false);
+        engine.startPreview(VideoSourceType.VideoSourceCameraPrimary);
+        try {
+          engine.setupLocalVideo({
+            uid: 0,
+            renderMode: RenderModeType.RenderModeHidden,
+            sourceType: VideoSourceType.VideoSourceCameraPrimary,
+          });
+        } catch (_error) {
+          // Rendering setup may vary by SDK build; preview still proceeds.
+        }
+      } else {
+        try {
+          engine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
+        } catch (_error) {
+          // ignore stop preview failures
+        }
+        try {
+          engine.disableVideo();
+        } catch (_error) {
+          // ignore disable video failures
+        }
+      }
 
       if (AUTH_DEBUG_ENABLED) {
         engine.enableAudioVolumeIndication(300, 3, true);
@@ -345,7 +412,9 @@ export const joinAgoraVoiceChannel = async ({
 
     const joinResult = engine.joinChannel(token || '', channelName, Number(uid) || 0, {
       publishMicrophoneTrack: true,
+      publishCameraTrack: normalizedCallType === 'video',
       autoSubscribeAudio: true,
+      autoSubscribeVideo: normalizedCallType === 'video',
       clientRoleType: ClientRoleType.ClientRoleBroadcaster,
     });
 
@@ -380,6 +449,14 @@ export const joinAgoraVoiceChannel = async ({
               onUserOffline,
               onConnectionStateChanged,
               onTokenWillExpire,
+              onLocalAudioStateChanged,
+              onRemoteAudioStateChanged,
+              onFirstLocalVideoFrame,
+              onFirstRemoteVideoFrame,
+              onRemoteVideoStateChanged,
+              onAudioRoutingChanged,
+              onAudioVolumeIndication,
+              callType: normalizedCallType,
             });
           })
           .then(resolve)
@@ -501,6 +578,52 @@ export const renewAgoraVoiceToken = (token) => {
   rtcEngine.renewToken(token);
 };
 
+export const setLocalVideoEnabled = (enabled, options = {}) => {
+  if (!rtcEngine || currentCallType !== 'video') {
+    return;
+  }
+
+  const nextEnabled = Boolean(enabled);
+  currentCameraEnabled = nextEnabled;
+
+  try {
+    rtcEngine.enableVideo();
+    rtcEngine.enableLocalVideo(nextEnabled);
+    rtcEngine.muteLocalVideoStream(!nextEnabled);
+    if (nextEnabled) {
+      rtcEngine.startPreview(VideoSourceType.VideoSourceCameraPrimary);
+    } else {
+      rtcEngine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
+    }
+  } catch (_error) {
+    // camera toggles are best effort across SDK variants
+  }
+
+  logAgoraVoice('localCameraToggle', {
+    enabled: nextEnabled,
+    reason: options?.reason || 'toggle_local_camera',
+    callType: currentCallType,
+  });
+};
+
+export const switchLocalCamera = () => {
+  if (!rtcEngine || currentCallType !== 'video') {
+    return;
+  }
+
+  try {
+    rtcEngine.switchCamera();
+    logAgoraVoice('cameraSwitched', {
+      callType: currentCallType,
+    });
+  } catch (error) {
+    logAgoraVoice('cameraSwitchFailed', {
+      callType: currentCallType,
+      message: error?.message || 'Unknown error',
+    });
+  }
+};
+
 export const leaveAgoraVoiceChannel = async () => {
   if (!rtcEngine) {
     return;
@@ -555,6 +678,16 @@ export const leaveAgoraVoiceChannel = async () => {
   })
     .catch(() => 0)
     .finally(() => {
+      try {
+        rtcEngine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
+      } catch (_error) {
+        // ignore preview stop failures
+      }
+      try {
+        rtcEngine.disableVideo();
+      } catch (_error) {
+        // ignore video shutdown failures
+      }
       stopCommunicationAudioRoute().catch(() => {});
       stopOngoingCallServiceIfNeeded({
         reason: 'leave_channel',
@@ -569,6 +702,8 @@ export const leaveAgoraVoiceChannel = async () => {
       activeChannelName = null;
       joinedChannelName = null;
       currentSpeakerOn = false;
+      currentCallType = 'audio';
+      currentCameraEnabled = false;
     });
 
   return pendingLeave;
@@ -592,6 +727,16 @@ export const destroyAgoraVoiceEngine = () => {
   unregisterLeaveEvents();
   unregisterRtcEvents();
   try {
+    rtcEngine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
+  } catch (_error) {
+    // Ignore preview stop errors; release still proceeds.
+  }
+  try {
+    rtcEngine.disableVideo();
+  } catch (_error) {
+    // Ignore disable video errors; release still proceeds.
+  }
+  try {
     rtcEngine.leaveChannel();
   } catch (_error) {
     // Ignore leave errors; release still proceeds.
@@ -608,6 +753,8 @@ export const destroyAgoraVoiceEngine = () => {
   joinedChannelName = null;
   currentMicMuted = false;
   currentSpeakerOn = false;
+  currentCallType = 'audio';
+  currentCameraEnabled = false;
   stopCommunicationAudioRoute().catch(() => {});
   stopOngoingCallServiceIfNeeded({
     reason: 'engine_cleanup',

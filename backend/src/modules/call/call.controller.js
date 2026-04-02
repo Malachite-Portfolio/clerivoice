@@ -6,6 +6,7 @@ const requestCall = asyncHandler(async (req, res) => {
   const data = await callService.requestCall({
     userId: req.user.id,
     listenerId: req.body.listenerId,
+    callType: req.body.callType,
   });
 
   return successResponse(res, data, 'Call request sent');

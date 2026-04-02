@@ -14,7 +14,6 @@ const userVariantConfig = {
   userStorageKey: 'clarivoice_user_user',
   compatibilityAccessTokenStorageKey: 'token',
   compatibilityRefreshTokenStorageKey: 'refreshToken',
-  demoFlagStorageKey: 'isDemoUser',
   roleStorageKey: 'userRole',
   isListenerApp: false,
 };

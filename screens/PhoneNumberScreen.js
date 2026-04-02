@@ -16,13 +16,9 @@ import theme from '../constants/theme';
 import {
   API_BASE_URL,
   AUTH_DEBUG_ENABLED,
-  ENABLE_DEMO_LOGIN,
-  ENABLE_TEST_AUTH,
 } from '../constants/api';
-import { useAuth } from '../context/AuthContext';
-import { getHomeRouteName } from '../navigation/navigationRef';
-import { createDemoUserSession } from '../services/demoMode';
 import { sendOtp, USER_AUTH_ENDPOINTS } from '../services/userAuthApi';
+import { normalizeIndianPhoneInput, toIndianE164 } from '../services/authPhone';
 import AppLogo from '../components/AppLogo';
 
 const logOtpScreenDebug = (label, payload) => {
@@ -34,27 +30,32 @@ const logOtpScreenDebug = (label, payload) => {
 };
 
 const PhoneNumberScreen = ({ navigation }) => {
-  const { setSession } = useAuth();
   const [phone, setPhone] = useState('');
+  const [rawPhoneInput, setRawPhoneInput] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const isValidPhone = useMemo(() => /^\d{10}$/.test(phone), [phone]);
 
   const onPhoneChange = (text) => {
-    const cleaned = text.replace(/[^0-9]/g, '').slice(0, 10);
-    setPhone(cleaned);
+    setRawPhoneInput(text);
+    setPhone(normalizeIndianPhoneInput(text));
     if (error) {
       setError('');
     }
   };
 
   const onContinue = async () => {
+    const normalizedPhone = toIndianE164(phone);
+    const endpoint = USER_AUTH_ENDPOINTS.sendOtp;
+    const finalApiUrl = `${API_BASE_URL}${endpoint}`;
+
     logOtpScreenDebug('continueButtonPressed', {
-      enteredPhone: phone,
+      rawPhoneEntered: rawPhoneInput,
+      normalizedPhone,
       isValidPhone,
-      apiBaseUrl: API_BASE_URL,
-      testAuthEnabled: ENABLE_TEST_AUTH,
+      otpSendEndpointCalled: endpoint,
+      finalApiUrl,
     });
 
     if (!isValidPhone) {
@@ -72,41 +73,39 @@ const PhoneNumberScreen = ({ navigation }) => {
       return;
     }
 
-    const fullPhone = `+91${phone}`;
     const requestPayload = {
-      phone: fullPhone,
+      phone: normalizedPhone,
       purpose: 'LOGIN',
     };
 
     logOtpScreenDebug('continuePressed', {
-      enteredPhone: phone,
-      normalizedPhone: fullPhone,
-      apiBaseUrl: API_BASE_URL,
-      finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.sendOtp}`,
+      rawPhoneEntered: rawPhoneInput,
+      normalizedPhone,
+      finalApiUrl,
       requestPayload,
-      testAuthEnabled: ENABLE_TEST_AUTH,
+      otpSendEndpointCalled: endpoint,
     });
 
     try {
       setLoading(true);
       setError('');
-      const otpResponse = await sendOtp(fullPhone);
+      const otpResponse = await sendOtp(normalizedPhone);
       logOtpScreenDebug('sendOtpSuccess', {
-        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.sendOtp}`,
+        finalApiUrl,
         requestPayload,
-        normalizedPhone: fullPhone,
+        normalizedPhone,
         status: otpResponse?.status ?? null,
         responseBody: otpResponse?.body ?? null,
       });
-      navigation.navigate('Otp', { phone: fullPhone });
+      navigation.navigate('Otp', { phone: normalizedPhone });
     } catch (apiError) {
       logOtpScreenDebug('sendOtpFailure', {
-        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.sendOtp}`,
+        finalApiUrl,
         requestPayload,
-        normalizedPhone: fullPhone,
+        normalizedPhone,
         status: apiError?.response?.status ?? null,
-        responseBody: apiError?.response?.data ?? null,
         errorResponseData: apiError?.response?.data ?? null,
+        responseBody: apiError?.response?.data ?? null,
         message: apiError?.message || 'Unknown error',
       });
 
@@ -115,34 +114,6 @@ const PhoneNumberScreen = ({ navigation }) => {
         'Unable to send OTP right now. Please check backend connection.';
       setError(message);
       Alert.alert('OTP Failed', message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const onContinueWithDemo = async () => {
-    try {
-      setLoading(true);
-      setError('');
-      const demoSession = createDemoUserSession();
-
-      logOtpScreenDebug('demoLoginPressed', {
-        targetRoute: getHomeRouteName(),
-        isDemoEnabled: ENABLE_DEMO_LOGIN,
-      });
-
-      await setSession(demoSession);
-      navigation.reset({
-        index: 0,
-        routes: [{ name: getHomeRouteName() }],
-      });
-    } catch (error) {
-      logOtpScreenDebug('demoLoginFailed', {
-        message: error?.message || 'Unknown error',
-      });
-      const message = error?.message || 'Unable to start demo mode right now.';
-      setError(message);
-      Alert.alert('Demo Login Failed', message);
     } finally {
       setLoading(false);
     }
@@ -213,19 +184,6 @@ const PhoneNumberScreen = ({ navigation }) => {
                 </Text>
               </LinearGradient>
             </TouchableOpacity>
-
-            {ENABLE_DEMO_LOGIN ? (
-              <TouchableOpacity
-                onPress={onContinueWithDemo}
-                activeOpacity={0.86}
-                disabled={loading}
-                style={styles.demoButtonShell}
-              >
-                <View style={styles.demoButton}>
-                  <Text style={styles.demoButtonLabel}>Continue with Demo</Text>
-                </View>
-              </TouchableOpacity>
-            ) : null}
           </View>
 
           <Text style={styles.footerText}>
@@ -350,24 +308,6 @@ const styles = StyleSheet.create({
   },
   buttonLabelDisabled: {
     color: 'rgba(227, 26, 151, 0.45)',
-  },
-  demoButtonShell: {
-    marginTop: 12,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-  },
-  demoButton: {
-    minHeight: 52,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
-  },
-  demoButtonLabel: {
-    color: theme.colors.textPrimary,
-    fontSize: 15,
-    fontWeight: '700',
   },
   footerText: {
     color: 'rgba(255,255,255,0.46)',

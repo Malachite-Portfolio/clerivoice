@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef } from 'react';
-import { AppState } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
@@ -14,6 +14,7 @@ import {
   consumeInitialNotificationResponseAsync,
   registerForPushNotificationsAsync,
   registerNotificationListeners,
+  shouldUseInAppChatBanner,
   updateNotificationRuntimeState,
 } from '../services/notificationService';
 import {
@@ -59,8 +60,19 @@ const RealtimeRuntimeManager = () => {
   const queryClient = useQueryClient();
   const pushTokenRef = useRef(null);
   const pendingIntentRef = useRef(null);
+  const bannerTimerRef = useRef(null);
+  const [foregroundBanner, setForegroundBanner] = useState(null);
 
   const appFlavor = isListenerApp ? 'listener' : 'user';
+
+  const dismissForegroundBanner = useCallback(() => {
+    if (bannerTimerRef.current) {
+      clearTimeout(bannerTimerRef.current);
+      bannerTimerRef.current = null;
+    }
+
+    setForegroundBanner(null);
+  }, []);
 
   const stopIncomingCallRingtone = useCallback(
     (payload, reason = 'unknown') => {
@@ -162,6 +174,38 @@ const RealtimeRuntimeManager = () => {
     [session?.accessToken],
   );
 
+  const showForegroundChatBanner = useCallback((notification) => {
+    if (!shouldUseInAppChatBanner(notification)) {
+      return false;
+    }
+
+    const content = notification?.request?.content || {};
+    const data = content?.data || {};
+    const nextBanner = {
+      id: notification?.request?.identifier || `${data?.sessionId || 'chat'}:${Date.now()}`,
+      title: content?.title || data?.senderName || 'New message',
+      body: content?.body || data?.preview || 'You have a new message.',
+      sessionId: data?.sessionId || null,
+    };
+
+    logRealtimeRuntime('inAppChatBannerShown', {
+      sessionId: nextBanner.sessionId,
+      title: nextBanner.title,
+    });
+
+    if (bannerTimerRef.current) {
+      clearTimeout(bannerTimerRef.current);
+    }
+
+    setForegroundBanner(nextBanner);
+    bannerTimerRef.current = setTimeout(() => {
+      setForegroundBanner(null);
+      bannerTimerRef.current = null;
+    }, 3600);
+
+    return true;
+  }, []);
+
   useEffect(() => {
     updateNotificationRuntimeState({ appState: AppState.currentState || 'active' });
 
@@ -186,12 +230,17 @@ const RealtimeRuntimeManager = () => {
           type: data?.type || null,
           sessionId: data?.sessionId || null,
         });
+
+        showForegroundChatBanner(notification);
       },
       onNotificationResponse: handleNavigationIntent,
     });
 
-    return unsubscribe;
-  }, [handleNavigationIntent]);
+    return () => {
+      unsubscribe();
+      dismissForegroundBanner();
+    };
+  }, [dismissForegroundBanner, handleNavigationIntent, showForegroundChatBanner]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -362,7 +411,67 @@ const RealtimeRuntimeManager = () => {
     stopIncomingCallRingtone,
   ]);
 
-  return null;
+  useEffect(() => () => {
+    if (bannerTimerRef.current) {
+      clearTimeout(bannerTimerRef.current);
+      bannerTimerRef.current = null;
+    }
+  }, []);
+
+  if (!foregroundBanner) {
+    return null;
+  }
+
+  return (
+    <View pointerEvents="box-none" style={styles.bannerLayer}>
+      <TouchableOpacity
+        activeOpacity={0.92}
+        onPress={dismissForegroundBanner}
+        style={styles.bannerCard}
+      >
+        <Text style={styles.bannerTitle} numberOfLines={1}>
+          {foregroundBanner.title}
+        </Text>
+        <Text style={styles.bannerBody} numberOfLines={2}>
+          {foregroundBanner.body}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
 };
+
+const styles = StyleSheet.create({
+  bannerLayer: {
+    position: 'absolute',
+    top: 18,
+    left: 14,
+    right: 14,
+    zIndex: 999,
+    elevation: 12,
+  },
+  bannerCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 42, 163, 0.38)',
+    backgroundColor: 'rgba(9, 10, 20, 0.96)',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    shadowColor: '#000000',
+    shadowOpacity: 0.24,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  bannerTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  bannerBody: {
+    color: 'rgba(255,255,255,0.74)',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+});
 
 export default RealtimeRuntimeManager;

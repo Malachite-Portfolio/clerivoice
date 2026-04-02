@@ -15,6 +15,40 @@ let io = null;
 let billingManager = null;
 
 const FINAL_CALL_STATES = new Set(['ENDED', 'CANCELLED', 'REJECTED', 'MISSED']);
+const VALID_CALL_TYPES = new Set(['audio', 'video']);
+
+const normalizeCallType = (value) => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+
+  if (VALID_CALL_TYPES.has(normalized)) {
+    return normalized;
+  }
+
+  return 'audio';
+};
+
+const resolveCallTypeFromSessionId = async (sessionId) => {
+  if (!sessionId) {
+    return 'audio';
+  }
+
+  const requestEvent = await prisma.callEvent.findFirst({
+    where: {
+      sessionId,
+      eventType: 'call_request',
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+    select: {
+      payload: true,
+    },
+  });
+
+  return normalizeCallType(requestEvent?.payload?.callType);
+};
 
 const setRealtimeDependencies = ({ socketServer, sessionBillingManager }) => {
   io = socketServer;
@@ -107,9 +141,12 @@ const finalizeCallSession = async ({
     await setListenerOnline(session.listenerId, reasonCode || 'CALL_ENDED');
   }
 
+  const callType = await resolveCallTypeFromSessionId(session.id);
+
   const payload = {
     sessionId: session.id,
     channelName: getCallChannelName(session.id),
+    callType,
     endReason,
     reasonCode: reasonCode || null,
     endedBy: endedBy || 'SYSTEM',
@@ -132,8 +169,13 @@ const finalizeCallSession = async ({
   return updated;
 };
 
-const requestCall = async ({ userId, listenerId }) => {
-  const check = await sessionGuardService.canStartCall({ userId, listenerId });
+const requestCall = async ({ userId, listenerId, callType }) => {
+  const check = await sessionGuardService.canStartCall({
+    userId,
+    listenerId,
+    actorId: userId,
+  });
+  const normalizedCallType = normalizeCallType(callType);
 
   const session = await prisma.callSession.create({
     data: {
@@ -177,6 +219,7 @@ const requestCall = async ({ userId, listenerId }) => {
         channelName,
         requestedBy: userId,
         listenerId,
+        callType: normalizedCallType,
       },
     },
   });
@@ -185,6 +228,7 @@ const requestCall = async ({ userId, listenerId }) => {
     io.to(`user:${listenerId}`).emit('call_request', {
       sessionId: session.id,
       channelName,
+      callType: normalizedCallType,
       userId,
       listenerId,
       requester: session.user,
@@ -196,6 +240,7 @@ const requestCall = async ({ userId, listenerId }) => {
     io.to(`user:${userId}`).emit('call_ringing', {
       sessionId: session.id,
       channelName,
+      callType: normalizedCallType,
       listenerId,
     });
   }
@@ -210,6 +255,7 @@ const requestCall = async ({ userId, listenerId }) => {
         requesterAvatar: session.user?.profileImageUrl || null,
         ratePerMinute: Number(session.ratePerMinute),
         requestedAt: session.requestedAt?.toISOString?.() || new Date().toISOString(),
+        callType: normalizedCallType,
       })
     )
     .catch((error) => {
@@ -226,12 +272,24 @@ const requestCall = async ({ userId, listenerId }) => {
     listenerId,
     channelName,
     status: session.status,
+    callType: normalizedCallType,
+  });
+  logger.info('[CallLifecycle] call created', {
+    sessionId: session.id,
+    userId,
+    listenerId,
+    callType: normalizedCallType,
+  });
+  logger.info('[CallLifecycle] call ringing', {
+    sessionId: session.id,
+    status: session.status,
   });
 
   return {
     session: {
       ...session,
       channelName,
+      callType: normalizedCallType,
     },
     agora,
     eligibility: {
@@ -262,6 +320,7 @@ const acceptCall = async ({ listenerId, sessionId }) => {
     await sessionGuardService.canStartCall({
       userId: session.userId,
       listenerId: session.listenerId,
+      actorId: listenerId,
     });
   } catch (error) {
     await finalizeCallSession({
@@ -297,6 +356,7 @@ const acceptCall = async ({ listenerId, sessionId }) => {
   });
 
   const channelName = getCallChannelName(sessionId);
+  const callType = await resolveCallTypeFromSessionId(sessionId);
   const listenerAgora = agoraService.generateRtcToken({
     userId: listenerId,
     channelName,
@@ -310,6 +370,7 @@ const acceptCall = async ({ listenerId, sessionId }) => {
       payload: {
         listenerId,
         channelName,
+        callType,
       },
     },
   });
@@ -317,6 +378,7 @@ const acceptCall = async ({ listenerId, sessionId }) => {
   emitCallRealtime(session, 'call_accepted', {
     sessionId,
     channelName,
+    callType,
     status: updated.status,
   });
 
@@ -326,12 +388,21 @@ const acceptCall = async ({ listenerId, sessionId }) => {
     userId: session.userId,
     channelName,
     status: updated.status,
+    callType,
+  });
+  logger.info('[CallLifecycle] call accepted', {
+    sessionId,
+    listenerId,
+    userId: session.userId,
+    status: updated.status,
+    callType,
   });
 
   return {
     session: {
       ...updated,
       channelName,
+      callType,
     },
     agora: listenerAgora,
   };
@@ -355,18 +426,25 @@ const rejectCall = async ({ listenerId, sessionId, reason }) => {
     endedBy: listenerId,
     force: true,
   });
+  const callType = await resolveCallTypeFromSessionId(sessionId);
 
   await prisma.callEvent.create({
     data: {
       sessionId,
       eventType: 'call_rejected',
-      payload: { reason: reason || 'Rejected by listener' },
+      payload: {
+        callType,
+        reasonCode: 'CALL_REJECTED',
+        reason: reason || 'Call rejected',
+      },
     },
   });
 
   emitCallRealtime(session, 'call_rejected', {
     sessionId,
-    reason: reason || 'Call rejected by listener',
+    callType,
+    reasonCode: 'CALL_REJECTED',
+    reason: reason || 'Call rejected',
   });
 
   return updated;
@@ -436,6 +514,7 @@ const renewCallToken = async ({ actorId, sessionId }) => {
   return {
     sessionId,
     channelName,
+    callType: await resolveCallTypeFromSessionId(sessionId),
     agora,
   };
 };
@@ -498,17 +577,55 @@ const markCallParticipantJoined = async ({ actorId, sessionId }) => {
     joinedActorIds: Array.from(joinedActors),
   });
 
-  if (joinedActors.size < 2) {
+  const acceptedEvent = await prisma.callEvent.findFirst({
+    where: {
+      sessionId,
+      eventType: 'call_accepted',
+    },
+    select: {
+      id: true,
+      createdAt: true,
+    },
+  });
+  const isCallAccepted = Boolean(acceptedEvent) || session.status === 'ACTIVE';
+
+  if (!isCallAccepted) {
+    logger.info('[Call] waiting for listener acceptance before activation', {
+      sessionId,
+      actorId,
+      status: session.status,
+      joinedActorIds: Array.from(joinedActors),
+    });
     return {
       connected: false,
       session: {
         ...session,
         channelName: getCallChannelName(session.id),
+        callType: await resolveCallTypeFromSessionId(session.id),
+      },
+      waitingForAccept: true,
+    };
+  }
+
+  if (joinedActors.size < 2) {
+    const callType = await resolveCallTypeFromSessionId(session.id);
+    logger.info('[Call] waiting for both participants to join media', {
+      sessionId,
+      joinedActorIds: Array.from(joinedActors),
+      acceptedAt: acceptedEvent?.createdAt || null,
+    });
+    return {
+      connected: false,
+      session: {
+        ...session,
+        channelName: getCallChannelName(session.id),
+        callType,
       },
     };
   }
 
   const now = new Date();
+  const callType = await resolveCallTypeFromSessionId(session.id);
   const shouldActivateSession = session.status !== 'ACTIVE';
   const updatedSession = shouldActivateSession
     ? await prisma.callSession.update({
@@ -526,9 +643,20 @@ const markCallParticipantJoined = async ({ actorId, sessionId }) => {
       billingManager.startCallBilling(sessionId, { runImmediately: true });
     }
 
+    logger.info('[CallLifecycle] call connected', {
+      sessionId,
+      userId: session.userId,
+      listenerId: session.listenerId,
+      callType,
+      joinedActorIds: Array.from(joinedActors),
+      acceptedAt: acceptedEvent?.createdAt || null,
+      status: 'ACTIVE',
+    });
+
     emitCallRealtime(updatedSession, 'call_started', {
       sessionId,
       channelName: getCallChannelName(sessionId),
+      callType,
       status: 'ACTIVE',
       startedAt: updatedSession.startedAt,
       answeredAt: updatedSession.answeredAt,
@@ -540,6 +668,7 @@ const markCallParticipantJoined = async ({ actorId, sessionId }) => {
     session: {
       ...updatedSession,
       channelName: getCallChannelName(updatedSession.id),
+      callType,
     },
   };
 };
@@ -581,7 +710,7 @@ const getCallSession = async ({ actorId, sessionId }) => {
     where: {
       sessionId,
       eventType: {
-        in: ['call_accepted', 'call_rejected', ...joinedEventTypes],
+        in: ['call_request', 'call_accepted', 'call_rejected', ...joinedEventTypes],
       },
     },
     orderBy: {
@@ -590,11 +719,17 @@ const getCallSession = async ({ actorId, sessionId }) => {
     select: {
       eventType: true,
       createdAt: true,
+      payload: true,
     },
   });
 
+  const callRequestEvent = events.find((event) => event.eventType === 'call_request') || null;
   const acceptedEvent = events.find((event) => event.eventType === 'call_accepted') || null;
   const rejectedEvent = events.find((event) => event.eventType === 'call_rejected') || null;
+  const callType = normalizeCallType(callRequestEvent?.payload?.callType);
+  const rejectedReasonCode = String(rejectedEvent?.payload?.reasonCode || '')
+    .trim()
+    .toUpperCase();
   const joinedActorIds = events
     .filter((event) => event.eventType.startsWith('call_media_joined:'))
     .map((event) => event.eventType.replace('call_media_joined:', ''));
@@ -603,14 +738,17 @@ const getCallSession = async ({ actorId, sessionId }) => {
     session: {
       ...session,
       channelName: getCallChannelName(session.id),
+      callType,
     },
     realtime: {
+      callType,
       isAccepted: Boolean(acceptedEvent) || session.status === 'ACTIVE',
       acceptedAt: acceptedEvent?.createdAt || null,
       isRejected:
         Boolean(rejectedEvent) ||
         ['REJECTED', 'CANCELLED', 'MISSED', 'ENDED'].includes(session.status),
       rejectedAt: rejectedEvent?.createdAt || null,
+      rejectedReasonCode: rejectedReasonCode || null,
       joinedActorIds,
       hasUserJoinedMedia: joinedActorIds.includes(session.userId),
       hasListenerJoinedMedia: joinedActorIds.includes(session.listenerId),
@@ -640,9 +778,37 @@ const listCallSessions = async ({ userId, role, page = 1, limit = 20 }) => {
     prisma.callSession.count({ where }),
   ]);
 
+  const sessionIds = items.map((item) => item.id);
+  const requestEvents = sessionIds.length
+    ? await prisma.callEvent.findMany({
+        where: {
+          sessionId: { in: sessionIds },
+          eventType: 'call_request',
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        select: {
+          sessionId: true,
+          payload: true,
+        },
+      })
+    : [];
+
+  const callTypeBySessionId = new Map();
+  requestEvents.forEach((event) => {
+    if (!callTypeBySessionId.has(event.sessionId)) {
+      callTypeBySessionId.set(
+        event.sessionId,
+        normalizeCallType(event?.payload?.callType),
+      );
+    }
+  });
+
   const enriched = items.map((item) => ({
     ...item,
     channelName: getCallChannelName(item.id),
+    callType: callTypeBySessionId.get(item.id) || 'audio',
   }));
 
   return {

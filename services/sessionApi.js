@@ -30,6 +30,24 @@ const toTimestamp = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const getSessionRecordType = (session) => {
+  const rawType = String(
+    session?.type || session?.sessionType || session?.recordType || session?.kind || '',
+  )
+    .trim()
+    .toUpperCase();
+
+  if (rawType.includes('CALL') || session?.callType || session?.answeredAt || session?.durationSeconds) {
+    return 'CALL';
+  }
+
+  if (rawType.includes('CHAT')) {
+    return 'CHAT';
+  }
+
+  return 'CHAT';
+};
+
 const resolveSessionParticipant = (session, currentUserId) => {
   if (!session) {
     return null;
@@ -61,32 +79,28 @@ const getChatFallbackPreview = (status) => {
   }
 };
 
-const getCallPreview = (status) => {
-  switch (toStatus(status)) {
-    case 'REQUESTED':
-      return 'Incoming voice call request.';
-    case 'ACTIVE':
-      return 'Voice call connected.';
-    case 'REJECTED':
-      return 'Voice call declined.';
-    case 'ENDED':
-      return 'Voice call ended.';
-    default:
-      return 'Voice call update.';
-  }
-};
+export const requestCall = async (listenerId, options = {}) => {
+  const callType =
+    String(options?.callType || '').trim().toLowerCase() === 'video'
+      ? 'video'
+      : 'audio';
 
-export const requestCall = async (listenerId) => {
   if (isDemoSessionActive()) {
     return createDemoCallRequest(listenerId);
   }
 
   logSessionApi('callSessionCreateStart', {
     listenerId,
+    callType,
   });
-  const response = await apiClient.post(API_ENDPOINTS.call.request, { listenerId });
+  const response = await apiClient.post(API_ENDPOINTS.call.request, {
+    listenerId,
+    callType,
+  });
   logSessionApi('callSessionCreateSuccess', {
     listenerId,
+    callType:
+      response.data?.data?.session?.callType || callType,
     sessionId: response.data?.data?.session?.id || null,
     status: response.data?.data?.session?.status || null,
   });
@@ -233,13 +247,20 @@ export const getWalletSummary = async () => {
 };
 
 export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
-  const [chatSessionData, callSessionData] = await Promise.all([
-    getChatSessions({ page: 1, limit }),
-    getCallSessions({ page: 1, limit }),
-  ]);
+  const chatSessionData = await getChatSessions({ page: 1, limit });
 
-  const chatSessions = chatSessionData?.items || [];
-  const callSessions = callSessionData?.items || [];
+  const inboxSourceItems = chatSessionData?.items || [];
+  const chatSessions = inboxSourceItems.filter((session) => getSessionRecordType(session) === 'CHAT');
+
+  logSessionApi('inboxFetchedItemTypes', {
+    count: inboxSourceItems.length,
+    types: inboxSourceItems.map((session) => getSessionRecordType(session)),
+  });
+  logSessionApi('inboxFilteredCounts', {
+    total: inboxSourceItems.length,
+    chatOnly: chatSessions.length,
+    droppedNonChat: inboxSourceItems.length - chatSessions.length,
+  });
 
   const messageHistoryEntries = await Promise.all(
     chatSessions.map(async (session) => {
@@ -288,34 +309,14 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
     };
   });
 
-  const callItems = callSessions.map((session) => {
-    const participant = resolveSessionParticipant(session, currentUserId);
-    const timestamp =
-      session.answeredAt ||
-      session.startedAt ||
-      session.endedAt ||
-      session.requestedAt ||
-      session.createdAt;
-
-    return {
-      id: `call-${session.id}`,
-      type: 'call',
-      session,
-      participant: {
-        id: participant?.id || session.listenerId || session.userId,
-        name: participant?.displayName || 'Voice session',
-        profileImageUrl: participant?.profileImageUrl || null,
-      },
-      preview: getCallPreview(session.status),
-      unreadCount: 0,
-      timestamp,
-      sortAt: toTimestamp(timestamp),
-      status: session.status,
-      hasMessages: false,
-    };
-  });
-
-  return [...chatItems, ...callItems]
+  const finalItems = chatItems
     .sort((left, right) => right.sortAt - left.sortAt)
     .slice(0, limit);
+
+  logSessionApi('inboxFinalCounts', {
+    returned: finalItems.length,
+    returnedTypes: finalItems.map((item) => item.type),
+  });
+
+  return finalItems;
 };

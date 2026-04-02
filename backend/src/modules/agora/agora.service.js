@@ -10,6 +10,10 @@ const FINAL_CALL_STATES = new Set(['ENDED', 'CANCELLED', 'REJECTED', 'MISSED']);
 const FINAL_CHAT_STATES = new Set(['ENDED', 'CANCELLED', 'REJECTED']);
 
 const wrapGuardError = (error) => {
+  if (['HOST_BUSY', 'HOST_OFFLINE'].includes(error?.code)) {
+    throw error;
+  }
+
   if (['INSUFFICIENT_BALANCE', 'HOST_UNAVAILABLE'].includes(error?.code)) {
     throw new AppError(
       COMBINED_GUARD_MESSAGE,
@@ -60,6 +64,7 @@ const issueRtcToken = async ({
       await sessionGuardService.canStartCall({
         userId: session.userId,
         listenerId: session.listenerId,
+        actorId: requesterUserId,
       });
     } catch (error) {
       wrapGuardError(error);
@@ -110,6 +115,7 @@ const issueChatToken = async ({
       await sessionGuardService.canStartChat({
         userId: session.userId,
         listenerId: session.listenerId,
+        actorId: requesterUserId,
       });
     } catch (error) {
       wrapGuardError(error);

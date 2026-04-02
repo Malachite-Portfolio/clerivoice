@@ -37,14 +37,6 @@ const authDebugValue = String(process.env.EXPO_PUBLIC_AUTH_DEBUG || '').trim().t
 const authClearOnStartupValue = String(process.env.EXPO_PUBLIC_AUTH_CLEAR_ON_STARTUP_ONCE || '')
   .trim()
   .toLowerCase();
-const demoLoginValue = String(
-  process.env.EXPO_PUBLIC_ENABLE_DEMO_LOGIN || process.env.ENABLE_DEMO_LOGIN || '',
-)
-  .trim()
-  .toLowerCase();
-const testAuthValue = String(process.env.EXPO_PUBLIC_ENABLE_TEST_AUTH || '')
-  .trim()
-  .toLowerCase();
 const expoPushProjectIdValue = String(process.env.EXPO_PUBLIC_EXPO_PROJECT_ID || '')
   .trim();
 
@@ -65,8 +57,6 @@ export const AGORA_CHAT_APP_KEY = process.env.EXPO_PUBLIC_AGORA_CHAT_APP_KEY || 
 export const AUTH_DEBUG_ENABLED =
   authDebugValue === 'true' || (typeof __DEV__ !== 'undefined' ? __DEV__ : false);
 export const AUTH_CLEAR_ON_STARTUP_ONCE_ENABLED = authClearOnStartupValue === 'true';
-export const ENABLE_DEMO_LOGIN = demoLoginValue === 'true';
-export const ENABLE_TEST_AUTH = testAuthValue === 'true';
 export const EXPO_PUSH_PROJECT_ID = expoPushProjectIdValue;
 
 export const API_ENDPOINTS = {

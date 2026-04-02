@@ -14,20 +14,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
-import {
-  API_BASE_URL,
-  AUTH_DEBUG_ENABLED,
-  ENABLE_TEST_AUTH,
-} from '../constants/api';
+import { API_BASE_URL, AUTH_DEBUG_ENABLED } from '../constants/api';
 import AppLogo from '../components/AppLogo';
 import {
   LISTENER_AUTH_ENDPOINTS,
-  loginListener,
   sendListenerOtp,
   verifyListenerOtp,
 } from '../services/listenerAuthApi';
 import { useAuth } from '../context/AuthContext';
 import { getHomeRouteName } from '../navigation/navigationRef';
+import { normalizeIndianPhoneInput, toIndianE164 } from '../services/authPhone';
 
 const logListenerAuthDebug = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
@@ -37,14 +33,10 @@ const logListenerAuthDebug = (label, payload) => {
   console.log(`[ListenerLoginScreen] ${label}`, payload);
 };
 
-const normalizeLocalPhone = (value) => value.replace(/[^0-9]/g, '').slice(0, 10);
-const buildIndianPhone = (value) => `+91${normalizeLocalPhone(value)}`;
-
 const ListenerLoginScreen = ({ navigation }) => {
   const { setSession } = useAuth();
-  const [phoneOrEmail, setPhoneOrEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [phone, setPhone] = useState('');
+  const [rawPhoneInput, setRawPhoneInput] = useState('');
   const [otp, setOtp] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -52,10 +44,10 @@ const ListenerLoginScreen = ({ navigation }) => {
 
   const isValidPhone = useMemo(() => /^\d{10}$/.test(phone), [phone]);
   const isValidOtp = useMemo(() => /^\d{6}$/.test(otp), [otp]);
-  const normalizedPhone = useMemo(() => buildIndianPhone(phone), [phone]);
+  const normalizedPhone = useMemo(() => toIndianE164(phone), [phone]);
 
   const onBack = () => {
-    if (ENABLE_TEST_AUTH && otpStep) {
+    if (otpStep) {
       setOtpStep(false);
       setOtp('');
       setError('');
@@ -65,72 +57,20 @@ const ListenerLoginScreen = ({ navigation }) => {
     navigation.goBack();
   };
 
-  const onPasswordSubmit = async () => {
-    if (!phoneOrEmail.trim() || !password.trim()) {
-      setError('Please enter listener ID/phone/email and password.');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    logListenerAuthDebug('passwordLoginPressed', {
-      identity: phoneOrEmail.trim(),
-      finalApiUrl: `${API_BASE_URL}${LISTENER_AUTH_ENDPOINTS.login}`,
-      payloadKeys: ['phoneOrEmail', 'password'],
-      testAuthEnabled: ENABLE_TEST_AUTH,
-    });
-
-    try {
-      const auth = await loginListener({
-        phoneOrEmail: phoneOrEmail.trim(),
-        password: password.trim(),
-      });
-
-      logListenerAuthDebug('passwordLoginSuccess', {
-        status: 200,
-        hasAccessToken: Boolean(auth?.accessToken),
-        role: auth?.user?.role || null,
-      });
-
-      await setSession({
-        user: auth.user,
-        accessToken: auth.accessToken,
-        refreshToken: auth.refreshToken,
-      });
-
-      navigation.reset({
-        index: 0,
-        routes: [{ name: getHomeRouteName() }],
-      });
-    } catch (apiError) {
-      logListenerAuthDebug('passwordLoginFailure', {
-        status: apiError?.response?.status ?? null,
-        responseBody: apiError?.response?.data ?? null,
-        message: apiError?.message || 'Unknown error',
-      });
-
-      const message =
-        apiError?.response?.data?.message ||
-        'Unable to login listener account. Please check credentials.';
-      setError(message);
-      Alert.alert('Listener Login Failed', message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const onSendOtp = async () => {
+    const endpoint = LISTENER_AUTH_ENDPOINTS.sendOtp;
+    const finalApiUrl = `${API_BASE_URL}${endpoint}`;
+
     logListenerAuthDebug('sendOtpPressed', {
-      enteredPhone: phone,
+      rawPhoneEntered: rawPhoneInput,
       normalizedPhone,
       isValidPhone,
-      finalApiUrl: `${API_BASE_URL}${LISTENER_AUTH_ENDPOINTS.sendOtp}`,
+      otpSendEndpointCalled: endpoint,
+      finalApiUrl,
       requestPayload: {
         phone: normalizedPhone,
         purpose: 'LOGIN',
       },
-      testAuthEnabled: ENABLE_TEST_AUTH,
     });
 
     if (!isValidPhone) {
@@ -145,17 +85,21 @@ const ListenerLoginScreen = ({ navigation }) => {
       const response = await sendListenerOtp(normalizedPhone);
 
       logListenerAuthDebug('sendOtpSuccess', {
+        finalApiUrl,
+        normalizedPhone,
         status: response?.status ?? null,
         responseBody: response?.body ?? null,
-        finalApiUrl: `${API_BASE_URL}${LISTENER_AUTH_ENDPOINTS.sendOtp}`,
       });
 
       setOtp('');
       setOtpStep(true);
     } catch (apiError) {
       logListenerAuthDebug('sendOtpFailure', {
+        finalApiUrl,
+        normalizedPhone,
         status: apiError?.response?.status ?? null,
         responseBody: apiError?.response?.data ?? null,
+        backendErrorResponseBody: apiError?.response?.data ?? null,
         message: apiError?.message || 'Unknown error',
       });
 
@@ -170,16 +114,20 @@ const ListenerLoginScreen = ({ navigation }) => {
   };
 
   const onVerifyOtp = async () => {
+    const endpoint = LISTENER_AUTH_ENDPOINTS.verifyOtp;
+    const finalApiUrl = `${API_BASE_URL}${endpoint}`;
+
     logListenerAuthDebug('verifyOtpPressed', {
+      rawPhoneEntered: rawPhoneInput,
       normalizedPhone,
       otpLength: otp.length,
-      finalApiUrl: `${API_BASE_URL}${LISTENER_AUTH_ENDPOINTS.verifyOtp}`,
+      otpVerifyEndpointCalled: endpoint,
+      finalApiUrl,
       requestPayload: {
         phone: normalizedPhone,
         otp,
         purpose: 'LOGIN',
       },
-      testAuthEnabled: ENABLE_TEST_AUTH,
     });
 
     if (!isValidOtp) {
@@ -197,6 +145,8 @@ const ListenerLoginScreen = ({ navigation }) => {
       });
 
       logListenerAuthDebug('verifyOtpSuccess', {
+        finalApiUrl,
+        normalizedPhone,
         hasAccessToken: Boolean(auth?.accessToken),
         role: auth?.user?.role || null,
         listenerId: auth?.user?.id || null,
@@ -214,8 +164,11 @@ const ListenerLoginScreen = ({ navigation }) => {
       });
     } catch (apiError) {
       logListenerAuthDebug('verifyOtpFailure', {
+        finalApiUrl,
+        normalizedPhone,
         status: apiError?.response?.status ?? null,
         responseBody: apiError?.response?.data ?? null,
+        backendErrorResponseBody: apiError?.response?.data ?? null,
         message: apiError?.message || 'Unknown error',
       });
 
@@ -229,12 +182,10 @@ const ListenerLoginScreen = ({ navigation }) => {
     }
   };
 
-  const title = ENABLE_TEST_AUTH ? 'Listener Test Login' : 'Listener Login';
-  const subtitle = ENABLE_TEST_AUTH
-    ? otpStep
-      ? `Enter the 6-digit code for ${normalizedPhone}`
-      : 'Enter the listener test phone number to receive the fixed testing OTP.'
-    : 'Sign in to receive live call and chat requests.';
+  const title = 'Listener Login';
+  const subtitle = otpStep
+    ? `Enter the 6-digit code sent for ${normalizedPhone}`
+    : 'Enter your listener phone number to continue securely.';
 
   return (
     <LinearGradient colors={['#05020D', '#070113', '#130322']} style={styles.container}>
@@ -256,106 +207,66 @@ const ListenerLoginScreen = ({ navigation }) => {
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.subtitle}>{subtitle}</Text>
 
-          {ENABLE_TEST_AUTH ? (
-            <>
-              {!otpStep ? (
-                <View style={styles.fieldWrap}>
-                  <Text style={styles.label}>Listener Phone Number</Text>
-                  <View style={styles.phoneInputWrap}>
-                    <View style={styles.countryCodeSection}>
-                      <Text style={styles.codeText}>+91</Text>
-                    </View>
-                    <View style={styles.codeDivider} />
-                    <TextInput
-                      value={phone}
-                      onChangeText={(text) => {
-                        setPhone(normalizeLocalPhone(text));
-                        if (error) {
-                          setError('');
-                        }
-                      }}
-                      placeholder="0000000101"
-                      placeholderTextColor="rgba(255,255,255,0.45)"
-                      style={styles.phoneInput}
-                      keyboardType="number-pad"
-                      maxLength={10}
-                    />
-                  </View>
+          {!otpStep ? (
+            <View style={styles.fieldWrap}>
+              <Text style={styles.label}>Listener Phone Number</Text>
+              <View style={styles.phoneInputWrap}>
+                <View style={styles.countryCodeSection}>
+                  <Text style={styles.codeText}>+91</Text>
                 </View>
-              ) : (
-                <>
-                  <View style={styles.fieldWrap}>
-                    <Text style={styles.label}>Listener Phone</Text>
-                    <View style={styles.infoChip}>
-                      <Text style={styles.infoChipText}>{normalizedPhone}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.fieldWrap}>
-                    <Text style={styles.label}>Fixed OTP</Text>
-                    <TextInput
-                      value={otp}
-                      onChangeText={(text) => {
-                        setOtp(text.replace(/[^0-9]/g, '').slice(0, 6));
-                        if (error) {
-                          setError('');
-                        }
-                      }}
-                      placeholder="123456"
-                      placeholderTextColor="rgba(255,255,255,0.45)"
-                      style={styles.input}
-                      keyboardType="number-pad"
-                      maxLength={6}
-                    />
-                  </View>
-
-                  <TouchableOpacity
-                    style={styles.resendWrap}
-                    onPress={onSendOtp}
-                    activeOpacity={0.8}
-                    disabled={loading}
-                  >
-                    <Text style={styles.resendText}>Resend code</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-            </>
+                <View style={styles.codeDivider} />
+                <TextInput
+                  value={phone}
+                  onChangeText={(text) => {
+                    setRawPhoneInput(text);
+                    setPhone(normalizeIndianPhoneInput(text));
+                    if (error) {
+                      setError('');
+                    }
+                  }}
+                  placeholder="9876543210"
+                  placeholderTextColor="rgba(255,255,255,0.45)"
+                  style={styles.phoneInput}
+                  keyboardType="number-pad"
+                  maxLength={10}
+                />
+              </View>
+            </View>
           ) : (
             <>
               <View style={styles.fieldWrap}>
-                <Text style={styles.label}>Listener ID / Phone / Email</Text>
-                <TextInput
-                  value={phoneOrEmail}
-                  onChangeText={(value) => {
-                    setPhoneOrEmail(value);
-                    if (error) {
-                      setError('');
-                    }
-                  }}
-                  placeholder="listener phone or email"
-                  placeholderTextColor="rgba(255,255,255,0.45)"
-                  style={styles.input}
-                  autoCapitalize="none"
-                />
+                <Text style={styles.label}>Listener Phone</Text>
+                <View style={styles.infoChip}>
+                  <Text style={styles.infoChipText}>{normalizedPhone}</Text>
+                </View>
               </View>
 
               <View style={styles.fieldWrap}>
-                <Text style={styles.label}>Password</Text>
+                <Text style={styles.label}>OTP</Text>
                 <TextInput
-                  value={password}
-                  onChangeText={(value) => {
-                    setPassword(value);
+                  value={otp}
+                  onChangeText={(text) => {
+                    setOtp(text.replace(/[^0-9]/g, '').slice(0, 6));
                     if (error) {
                       setError('');
                     }
                   }}
-                  placeholder="Enter password"
+                  placeholder="123456"
                   placeholderTextColor="rgba(255,255,255,0.45)"
                   style={styles.input}
-                  secureTextEntry
-                  autoCapitalize="none"
+                  keyboardType="number-pad"
+                  maxLength={6}
                 />
               </View>
+
+              <TouchableOpacity
+                style={styles.resendWrap}
+                onPress={onSendOtp}
+                activeOpacity={0.8}
+                disabled={loading}
+              >
+                <Text style={styles.resendText}>Resend code</Text>
+              </TouchableOpacity>
             </>
           )}
 
@@ -363,7 +274,7 @@ const ListenerLoginScreen = ({ navigation }) => {
 
           <TouchableOpacity
             style={[styles.loginButton, loading && styles.loginButtonDisabled]}
-            onPress={ENABLE_TEST_AUTH ? (otpStep ? onVerifyOtp : onSendOtp) : onPasswordSubmit}
+            onPress={otpStep ? onVerifyOtp : onSendOtp}
             activeOpacity={0.85}
             disabled={loading}
           >
@@ -371,11 +282,7 @@ const ListenerLoginScreen = ({ navigation }) => {
               <ActivityIndicator color="#FFFFFF" />
             ) : (
               <Text style={styles.loginButtonText}>
-                {ENABLE_TEST_AUTH
-                  ? otpStep
-                    ? 'Verify Listener OTP'
-                    : 'Send Listener OTP'
-                  : 'Login as Listener'}
+                {otpStep ? 'Verify OTP' : 'Send OTP'}
               </Text>
             )}
           </TouchableOpacity>

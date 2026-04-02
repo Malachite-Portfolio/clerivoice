@@ -13,11 +13,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
-import { AUTH_DEBUG_ENABLED, ENABLE_TEST_AUTH } from '../constants/api';
-import { sendOtp, verifyOtp } from '../services/userAuthApi';
+import { AUTH_DEBUG_ENABLED, API_BASE_URL } from '../constants/api';
+import { sendOtp, USER_AUTH_ENDPOINTS, verifyOtp } from '../services/userAuthApi';
 import { useAuth } from '../context/AuthContext';
 import AppLogo from '../components/AppLogo';
 import { getHomeRouteName } from '../navigation/navigationRef';
+import { toIndianE164 } from '../services/authPhone';
 
 const OTP_LENGTH = 6;
 
@@ -30,7 +31,7 @@ const logOtpDebug = (label, payload) => {
 };
 
 const OtpScreen = ({ navigation, route }) => {
-  const phone = route?.params?.phone || '+910000000000';
+  const phone = toIndianE164(route?.params?.phone || '+910000000000');
   const { setSession } = useAuth();
 
   const [otp, setOtp] = useState(Array(OTP_LENGTH).fill(''));
@@ -87,7 +88,8 @@ const OtpScreen = ({ navigation, route }) => {
       logOtpDebug('verifyOtpStart', {
         phone,
         otpLength: fullOtp.length,
-        testAuthEnabled: ENABLE_TEST_AUTH,
+        otpVerifyEndpointCalled: USER_AUTH_ENDPOINTS.verifyOtp,
+        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.verifyOtp}`,
       });
 
       const response = await verifyOtp({
@@ -116,8 +118,10 @@ const OtpScreen = ({ navigation, route }) => {
     } catch (apiError) {
       logOtpDebug('verifyOtpFailure', {
         phone,
+        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.verifyOtp}`,
         status: apiError?.response?.status ?? null,
         responseBody: apiError?.response?.data ?? null,
+        backendErrorResponseBody: apiError?.response?.data ?? null,
         message: apiError?.message || 'Unknown error',
       });
 
@@ -135,7 +139,8 @@ const OtpScreen = ({ navigation, route }) => {
     try {
       logOtpDebug('resendOtpStart', {
         phone,
-        testAuthEnabled: ENABLE_TEST_AUTH,
+        otpSendEndpointCalled: USER_AUTH_ENDPOINTS.sendOtp,
+        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.sendOtp}`,
       });
       await sendOtp(phone);
       logOtpDebug('resendOtpSuccess', {
@@ -148,8 +153,10 @@ const OtpScreen = ({ navigation, route }) => {
     } catch (apiError) {
       logOtpDebug('resendOtpFailure', {
         phone,
+        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.sendOtp}`,
         status: apiError?.response?.status ?? null,
         responseBody: apiError?.response?.data ?? null,
+        backendErrorResponseBody: apiError?.response?.data ?? null,
         message: apiError?.message || 'Unknown error',
       });
 

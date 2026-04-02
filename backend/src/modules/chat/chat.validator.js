@@ -20,6 +20,12 @@ const chatEndSchema = z.object({
 
 const chatTokenRefreshSchema = z.object({});
 
+const chatSendMessageSchema = z.object({
+  receiverId: z.string().min(10),
+  content: z.string().trim().min(1).max(2000),
+  messageType: z.string().trim().min(1).max(32).optional(),
+});
+
 const chatSessionsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -32,5 +38,6 @@ module.exports = {
   chatBodyActionSchema,
   chatEndSchema,
   chatTokenRefreshSchema,
+  chatSendMessageSchema,
   chatSessionsQuerySchema,
 };

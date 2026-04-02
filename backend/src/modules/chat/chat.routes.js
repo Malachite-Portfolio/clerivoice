@@ -9,6 +9,7 @@ const {
   chatActionSchema,
   chatBodyActionSchema,
   chatSessionsQuerySchema,
+  chatSendMessageSchema,
   chatTokenRefreshSchema,
 } = require('./chat.validator');
 
@@ -52,5 +53,6 @@ router.post(
 );
 router.get('/sessions', authMiddleware, validate(chatSessionsQuerySchema, 'query'), controller.getSessions);
 router.get('/:sessionId/messages', authMiddleware, controller.getMessages);
+router.post('/:sessionId/messages', authMiddleware, validate(chatSendMessageSchema), controller.sendMessage);
 
 module.exports = router;

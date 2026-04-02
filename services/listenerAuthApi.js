@@ -2,27 +2,8 @@ import { apiClient } from './apiClient';
 import { logAuthError, logAuthRequest, logAuthResponse } from './authRequestLogger';
 
 export const LISTENER_AUTH_ENDPOINTS = {
-  login: '/auth/login-listener',
   sendOtp: '/auth/send-listener-otp',
   verifyOtp: '/auth/verify-listener-otp',
-};
-
-export const loginListener = async ({ phoneOrEmail, password }) => {
-  const requestBody = {
-    phoneOrEmail,
-    password,
-  };
-
-  logAuthRequest('loginListener', LISTENER_AUTH_ENDPOINTS.login, requestBody);
-
-  try {
-    const response = await apiClient.post(LISTENER_AUTH_ENDPOINTS.login, requestBody);
-    logAuthResponse('loginListener', response, LISTENER_AUTH_ENDPOINTS.login);
-    return response.data.data;
-  } catch (error) {
-    logAuthError('loginListener', LISTENER_AUTH_ENDPOINTS.login, requestBody, error);
-    throw error;
-  }
 };
 
 export const sendListenerOtp = async (phone) => {

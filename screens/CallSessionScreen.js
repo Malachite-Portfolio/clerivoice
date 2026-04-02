@@ -1,8 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, AppState, BackHandler, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import {
+  RenderModeType,
+  RtcSurfaceView,
+  VideoSourceType,
+} from 'react-native-agora';
 import theme from '../constants/theme';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
@@ -20,15 +25,23 @@ import {
   leaveAgoraVoiceChannel,
   muteLocalAudio,
   renewAgoraVoiceToken,
+  setLocalVideoEnabled,
   setSpeakerEnabled,
+  switchLocalCamera,
   shouldKeepAgoraVoiceSessionAlive,
 } from '../services/agoraVoiceService';
-import { requestCallAudioPermissions } from '../services/audioPermissions';
+import {
+  requestCallAudioPermissions,
+  requestVideoCallPermissions,
+} from '../services/audioPermissions';
+import { getCallStatusMessageByCode } from '../services/callStatusMessage';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const src = (v) => (typeof v === 'string' ? { uri: v } : v || avatarPlaceholder);
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 const activeControlIconColor = '#08040F';
+const normalizeCallType = (value) =>
+  String(value || '').trim().toLowerCase() === 'video' ? 'video' : 'audio';
 const isSpeakerRoute = (routing) => {
   if (typeof routing === 'number') {
     return routing === 3;
@@ -56,12 +69,34 @@ const CallSessionScreen = ({ navigation, route }) => {
   const host = route?.params?.host || {};
   const payload = runtimePayload;
   const sessionId = payload?.session?.id || incomingRequest?.sessionId;
+  const resolvedCallType = useMemo(
+    () =>
+      normalizeCallType(
+        payload?.session?.callType ||
+          payload?.realtime?.callType ||
+          incomingRequest?.callType ||
+          route?.params?.callPayload?.session?.callType ||
+          route?.params?.incomingRequest?.callType,
+      ),
+    [
+      incomingRequest?.callType,
+      payload?.realtime?.callType,
+      payload?.session?.callType,
+      route?.params?.callPayload?.session?.callType,
+      route?.params?.incomingRequest?.callType,
+    ],
+  );
+  const isVideoCall = resolvedCallType === 'video';
   const isListener = authSession?.user?.role === 'LISTENER';
   const isDemoSession = Boolean(authSession?.isDemoUser || payload?.demoMode || incomingRequest?.demoMode);
   const [statusText, setStatusText] = useState(incomingRequest && !payload ? 'Incoming Call' : payload?.session?.status === 'ACTIVE' ? 'Connecting...' : 'Ringing...');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
+  const [isCameraEnabled, setIsCameraEnabled] = useState(isVideoCall);
+  const [remoteVideoUid, setRemoteVideoUid] = useState(null);
+  const [hasLocalVideoFrame, setHasLocalVideoFrame] = useState(false);
+  const [hasRemoteVideoFrame, setHasRemoteVideoFrame] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [lowBalanceWarning, setLowBalanceWarning] = useState('');
   const intervalRef = useRef(null);
@@ -80,10 +115,12 @@ const CallSessionScreen = ({ navigation, route }) => {
   const callSyncInFlightRef = useRef(false);
   const appStateRef = useRef(AppState.currentState || 'active');
   const [isResolvingIncoming, setIsResolvingIncoming] = useState(false);
+  const callTypeRef = useRef(resolvedCallType);
 
   const displayName = useMemo(() => host?.name || incomingRequest?.requester?.displayName || 'Support Host', [host?.name, incomingRequest?.requester?.displayName]);
   const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
   const callMode = incomingRequest && !runtimePayload ? 'incoming' : isConnected ? 'active' : 'outgoing';
+  const showVideoSurfaces = isVideoCall && callMode !== 'incoming' && !isDemoSession;
 
   const clearTimer = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -109,6 +146,25 @@ const CallSessionScreen = ({ navigation, route }) => {
         runtimePayload?.session?.startedAt || runtimePayload?.session?.answeredAt;
     }
   }, [runtimePayload]);
+
+  useEffect(() => {
+    callTypeRef.current = resolvedCallType;
+    if (!isVideoCall) {
+      setIsCameraEnabled(false);
+      setHasLocalVideoFrame(false);
+      setHasRemoteVideoFrame(false);
+      setRemoteVideoUid(null);
+      return;
+    }
+
+    setIsCameraEnabled((prev) => (prev === false ? true : prev));
+  }, [isVideoCall, resolvedCallType]);
+
+  useEffect(() => {
+    if (incomingRequest && !runtimePayload) {
+      setStatusText(isVideoCall ? 'Incoming video call' : 'Incoming Call');
+    }
+  }, [incomingRequest, isVideoCall, runtimePayload]);
 
   const activateConnectedState = useCallback((startedAt) => {
     if (callSyncTimeoutRef.current) {
@@ -146,7 +202,11 @@ const CallSessionScreen = ({ navigation, route }) => {
     hasJoinedAgoraRef.current = false;
     joiningAgoraRef.current = false;
     callConnectedRef.current = false;
-  }, [isDemoSession, sessionId]);
+    setHasLocalVideoFrame(false);
+    setHasRemoteVideoFrame(false);
+    setRemoteVideoUid(null);
+    setIsCameraEnabled(isVideoCall);
+  }, [isDemoSession, isVideoCall, sessionId]);
 
   const stopIncomingCallRingtone = useCallback((reason = 'unknown') => {
     if (!sessionId) {
@@ -206,17 +266,39 @@ const CallSessionScreen = ({ navigation, route }) => {
     joiningAgoraRef.current = true;
     joinAttemptCountRef.current += 1;
     const activePayload = runtimePayloadRef.current;
+    const activeCallType = normalizeCallType(
+      callTypeRef.current || activePayload?.session?.callType,
+    );
 
     try {
-      const permissionResult = await requestCallAudioPermissions();
-      logCallDebug('microphonePermissionResult', {
+      setHasRemoteVideoFrame(false);
+      setRemoteVideoUid(null);
+      if (activeCallType === 'video') {
+        setHasLocalVideoFrame(false);
+      }
+
+      const permissionResult =
+        activeCallType === 'video'
+          ? await requestVideoCallPermissions()
+          : await requestCallAudioPermissions();
+      logCallDebug(
+        activeCallType === 'video'
+          ? 'cameraPermissionStatus'
+          : 'microphonePermissionResult',
+        {
         sessionId,
+        callType: activeCallType,
         granted: permissionResult?.granted === true,
         permissions: permissionResult?.permissions || null,
-      });
+        },
+      );
 
       if (!permissionResult?.granted) {
-        throw new Error('Microphone permission is required to join the call.');
+        throw new Error(
+          activeCallType === 'video'
+            ? 'Camera and microphone permission is required to join this video call.'
+            : 'Microphone permission is required to join the call.',
+        );
       }
 
       if (!latestAgoraRef.current?.appId || !latestAgoraRef.current?.token) {
@@ -243,6 +325,7 @@ const CallSessionScreen = ({ navigation, route }) => {
         sessionId,
         channelName: resolvedChannelName,
         attemptCount: joinAttemptCountRef.current,
+        callType: activeCallType,
       });
       await joinAgoraVoiceChannel({
         appId: latestAgoraRef.current.appId,
@@ -250,12 +333,24 @@ const CallSessionScreen = ({ navigation, route }) => {
         channelName: resolvedChannelName,
         uid: latestAgoraRef.current.uid,
         sessionId,
+        callType: activeCallType,
         onJoinSuccess: () => {
           logCallDebug('joinSuccess', {
             sessionId,
             channelName: resolvedChannelName,
             attemptCount: joinAttemptCountRef.current,
+            callType: activeCallType,
           });
+          if (activeCallType === 'video') {
+            setIsCameraEnabled(true);
+            logCallDebug('videoEnabled', {
+              sessionId,
+              callType: activeCallType,
+              enabled: true,
+            });
+          } else {
+            setIsCameraEnabled(false);
+          }
           // Default voice calls to the earpiece like a normal phone call.
           muteLocalAudio(false);
           setSpeakerEnabled(false, {
@@ -269,12 +364,17 @@ const CallSessionScreen = ({ navigation, route }) => {
           });
         },
         onUserJoined: (remoteUid) => {
+          if (activeCallType === 'video' && Number.isFinite(Number(remoteUid))) {
+            setRemoteVideoUid(Number(remoteUid));
+          }
           logCallDebug('remoteUserJoined', {
             sessionId,
             remoteUid,
           });
         },
         onUserOffline: (remoteUid) => {
+          setRemoteVideoUid(null);
+          setHasRemoteVideoFrame(false);
           logCallDebug('remoteUserOffline', {
             sessionId,
             remoteUid,
@@ -301,6 +401,56 @@ const CallSessionScreen = ({ navigation, route }) => {
             remoteUid,
             state,
             reason,
+          });
+        },
+        onFirstLocalVideoFrame: ({ width, height, elapsed }) => {
+          if (activeCallType !== 'video') {
+            return;
+          }
+
+          setHasLocalVideoFrame(true);
+          logCallDebug('localPreviewStarted', {
+            sessionId,
+            width,
+            height,
+            elapsed,
+          });
+        },
+        onFirstRemoteVideoFrame: ({ remoteUid, width, height, elapsed }) => {
+          if (activeCallType !== 'video') {
+            return;
+          }
+
+          if (Number.isFinite(Number(remoteUid))) {
+            setRemoteVideoUid(Number(remoteUid));
+          }
+          setHasRemoteVideoFrame(true);
+          logCallDebug('remoteVideoReceived', {
+            sessionId,
+            remoteUid,
+            width,
+            height,
+            elapsed,
+          });
+        },
+        onRemoteVideoStateChanged: ({ remoteUid, state, reason, elapsed }) => {
+          if (activeCallType !== 'video') {
+            return;
+          }
+
+          const normalizedState = Number(state);
+          const remoteVideoActive = [1, 2].includes(normalizedState);
+          if (Number.isFinite(Number(remoteUid))) {
+            setRemoteVideoUid(Number(remoteUid));
+          }
+          setHasRemoteVideoFrame(remoteVideoActive);
+          logCallDebug('remoteVideoStateChanged', {
+            sessionId,
+            remoteUid,
+            state: normalizedState,
+            reason,
+            elapsed,
+            remoteVideoActive,
           });
         },
         onAudioRoutingChanged: ({ routing }) => {
@@ -340,7 +490,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       if (callConnectedRef.current) {
         activateConnectedState(callStartedAtRef.current);
       } else {
-        setStatusText('Connecting...');
+        setStatusText(activeCallType === 'video' ? 'Connecting video...' : 'Connecting...');
       }
     } catch (error) {
       hasJoinedAgoraRef.current = false;
@@ -354,7 +504,13 @@ const CallSessionScreen = ({ navigation, route }) => {
     } finally {
       joiningAgoraRef.current = false;
     }
-  }, [activateConnectedState, cleanupAgoraSession, isDemoSession, sessionId, startTimer]);
+  }, [
+    activateConnectedState,
+    cleanupAgoraSession,
+    isDemoSession,
+    sessionId,
+    startTimer,
+  ]);
 
   const handleSessionEnded = useCallback((eventPayload) => {
     if (eventPayload?.sessionId !== sessionId || sessionEndedRef.current) return;
@@ -502,15 +658,20 @@ const CallSessionScreen = ({ navigation, route }) => {
         realtime?.isRejected ||
         ['REJECTED', 'CANCELLED', 'MISSED', 'ENDED'].includes(normalizedStatus)
       ) {
+        const rejectedReasonCode =
+          realtime?.rejectedReasonCode || (normalizedStatus === 'REJECTED' ? 'CALL_REJECTED' : '');
+        const isRejectedCall = normalizedStatus === 'REJECTED' || rejectedReasonCode === 'CALL_REJECTED';
+        const reasonMessage = getCallStatusMessageByCode(
+          rejectedReasonCode,
+          isRejectedCall ? 'Call rejected' : 'This call is no longer active.',
+        );
         sessionEndedRef.current = true;
         clearTimer();
         await cleanupAgoraSession().catch(() => {});
-        setStatusText(normalizedStatus === 'REJECTED' ? 'Call rejected' : 'Call ended');
+        setStatusText(isRejectedCall ? 'Call rejected' : 'Call ended');
         Alert.alert(
-          normalizedStatus === 'REJECTED' ? 'Call rejected' : 'Call ended',
-          normalizedStatus === 'REJECTED'
-            ? 'Call rejected by listener.'
-            : 'This call is no longer active.',
+          isRejectedCall ? 'Call rejected' : 'Call ended',
+          reasonMessage,
           [
             {
               text: 'OK',
@@ -571,6 +732,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     logCallDebug('callScreenInit', {
       sessionId,
       isListener,
+      callType: callTypeRef.current,
       initialStatus:
         runtimePayloadRef.current?.session?.status || incomingRequest?.type || null,
       hasIncomingRequest: Boolean(incomingRequest),
@@ -613,11 +775,29 @@ const CallSessionScreen = ({ navigation, route }) => {
 
     const onCallAccepted = async (eventPayload) => {
       if (eventPayload?.sessionId !== sessionId) return;
+      if (eventPayload?.callType) {
+        setRuntimePayload((prev) =>
+          prev
+            ? {
+                ...prev,
+                session: {
+                  ...prev.session,
+                  callType: eventPayload.callType,
+                },
+              }
+            : prev,
+        );
+      }
       logCallDebug('callAccepted', {
         sessionId: eventPayload?.sessionId || null,
         role: isListener ? 'listener' : 'caller',
+        callType: eventPayload?.callType || callTypeRef.current,
       });
-      setStatusText('Connecting...');
+      setStatusText(
+        normalizeCallType(eventPayload?.callType || callTypeRef.current) === 'video'
+          ? 'Connecting video...'
+          : 'Connecting...',
+      );
       try { await joinAgoraIfNeeded(); } catch (error) { if (!isUnauthorizedApiError(error)) Alert.alert('Call connection failed', error?.message || 'Unable to connect call.'); }
     };
     const onCallStarted = async (eventPayload) => {
@@ -629,11 +809,15 @@ const CallSessionScreen = ({ navigation, route }) => {
         prev
           ? {
               ...prev,
-              session: {
+            session: {
                 ...prev.session,
                 status: 'ACTIVE',
                 startedAt: eventPayload?.startedAt || prev.session?.startedAt,
                 answeredAt: eventPayload?.answeredAt || prev.session?.answeredAt,
+                callType:
+                  eventPayload?.callType ||
+                  prev.session?.callType ||
+                  callTypeRef.current,
               },
             }
           : prev,
@@ -655,15 +839,23 @@ const CallSessionScreen = ({ navigation, route }) => {
     };
     const onCallRejected = (eventPayload) => {
       if (eventPayload?.sessionId !== sessionId) return;
+      const reasonCode = String(eventPayload?.reasonCode || 'CALL_REJECTED')
+        .trim()
+        .toUpperCase();
+      const reasonMessage = getCallStatusMessageByCode(
+        reasonCode,
+        eventPayload?.reason || 'Call rejected',
+      );
       logCallDebug('callRejected', {
         sessionId: eventPayload?.sessionId || null,
-        reason: eventPayload?.reason || null,
+        reasonCode,
+        reason: reasonMessage,
       });
       stopIncomingCallRingtone('call_rejected');
       clearTimer();
       cleanupAgoraSession('call_rejected').catch(() => {});
       setStatusText('Call rejected');
-      Alert.alert('Call rejected', eventPayload?.reason || 'Call rejected by listener.', [
+      Alert.alert('Call rejected', reasonMessage, [
         {
           text: 'OK',
           onPress: () => navigation.goBack(),
@@ -839,6 +1031,79 @@ const CallSessionScreen = ({ navigation, route }) => {
     setIsSpeakerOn(next);
   };
 
+  const onToggleCamera = () => {
+    if (!isVideoCall) {
+      return;
+    }
+
+    const next = !isCameraEnabled;
+    logCallDebug('cameraButtonPressed', {
+      sessionId,
+      nextEnabled: next,
+      hasJoined: hasJoinedAgoraRef.current,
+    });
+    setIsCameraEnabled(next);
+
+    if (!isDemoSession) {
+      setLocalVideoEnabled(next, {
+        reason: 'toggle_from_call_screen',
+      });
+    }
+  };
+
+  const onSwitchCamera = () => {
+    if (!isVideoCall || !isCameraEnabled || isDemoSession) {
+      return;
+    }
+
+    logCallDebug('switchCameraPressed', {
+      sessionId,
+    });
+    switchLocalCamera();
+  };
+
+  const minimizeCallScreen = useCallback(() => {
+    logCallDebug('callScreenMinimized', {
+      sessionId,
+      callMode,
+      isConnected,
+      hasJoined: hasJoinedAgoraRef.current,
+      joining: joiningAgoraRef.current,
+    });
+
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+      return true;
+    }
+
+    if (isListener) {
+      navigation.navigate('ListenerHome');
+      return true;
+    }
+
+    navigation.navigate('MainDrawer');
+    return true;
+  }, [callMode, isConnected, isListener, navigation, sessionId]);
+
+  useEffect(() => {
+    const onHardwareBackPress = () => {
+      logCallDebug('hardwareBackPressed', {
+        sessionId,
+        action: 'minimize_call_screen',
+      });
+      return minimizeCallScreen();
+    };
+
+    const backSubscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      onHardwareBackPress,
+    );
+
+    return () => {
+      backSubscription.remove();
+    };
+  }, [minimizeCallScreen, sessionId]);
+
   const onRejectIncoming = async () => {
     if (resolvingIncomingRef.current) {
       logCallDebug('callRejectSkipped', {
@@ -888,17 +1153,19 @@ const CallSessionScreen = ({ navigation, route }) => {
     setIsResolvingIncoming(true);
 
     if (isDemoSession) {
+      const demoCallType = normalizeCallType(callTypeRef.current);
       setRuntimePayload({
         session: {
           id: sessionId || `demo-call-${Date.now()}`,
           status: 'ACTIVE',
           startedAt: new Date().toISOString(),
           listenerId: incomingRequest?.requester?.id || host?.listenerId || null,
+          callType: demoCallType,
         },
         agora: null,
         demoMode: true,
       });
-      setStatusText('Connecting...');
+      setStatusText(demoCallType === 'video' ? 'Connecting video...' : 'Connecting...');
       resolvingIncomingRef.current = false;
       setIsResolvingIncoming(false);
       return;
@@ -911,15 +1178,26 @@ const CallSessionScreen = ({ navigation, route }) => {
       stopIncomingCallRingtone('accept_pressed');
       logCallDebug('callAcceptStart', {
         sessionId,
+        callType: callTypeRef.current,
       });
 
-      const permissionResult = await requestCallAudioPermissions();
-      logCallDebug('microphonePermissionResult', {
+      const activeCallType = normalizeCallType(callTypeRef.current);
+      const permissionResult =
+        activeCallType === 'video'
+          ? await requestVideoCallPermissions()
+          : await requestCallAudioPermissions();
+      logCallDebug(
+        activeCallType === 'video'
+          ? 'cameraPermissionStatus'
+          : 'microphonePermissionResult',
+        {
         sessionId,
+        callType: activeCallType,
         granted: permissionResult?.granted === true,
         permissions: permissionResult?.permissions || null,
         source: 'acceptIncoming',
-      });
+        },
+      );
 
       if (!permissionResult?.granted) {
         resolvingIncomingRef.current = false;
@@ -929,8 +1207,12 @@ const CallSessionScreen = ({ navigation, route }) => {
           source: 'accept_permission_denied_resume',
         }).catch(() => {});
         Alert.alert(
-          'Microphone permission needed',
-          'Enable microphone permission to accept this call.',
+          activeCallType === 'video'
+            ? 'Camera and microphone permission needed'
+            : 'Microphone permission needed',
+          activeCallType === 'video'
+            ? 'Enable camera and microphone permission to accept this video call.'
+            : 'Enable microphone permission to accept this call.',
         );
         return;
       }
@@ -943,16 +1225,27 @@ const CallSessionScreen = ({ navigation, route }) => {
       logCallDebug('callAcceptEmitStart', {
         sessionId,
         socketConnected: Boolean(socket?.connected),
+        callType: activeCallType,
       });
 
       const nextPayload = await emitWithAck('call_accepted', { sessionId });
       logCallDebug('callAcceptEmitSuccess', {
         sessionId: nextPayload?.session?.id || sessionId || null,
+        callType:
+          nextPayload?.session?.callType ||
+          nextPayload?.realtime?.callType ||
+          callTypeRef.current,
       });
       latestAgoraRef.current = nextPayload?.agora || null;
       runtimePayloadRef.current = nextPayload;
       setRuntimePayload(nextPayload);
-      setStatusText('Connecting...');
+      setStatusText(
+        normalizeCallType(
+          nextPayload?.session?.callType || nextPayload?.realtime?.callType || callTypeRef.current,
+        ) === 'video'
+          ? 'Connecting video...'
+          : 'Connecting...',
+      );
       logCallDebug('callAcceptSuccess', {
         sessionId: nextPayload?.session?.id || sessionId || null,
       });
@@ -1004,19 +1297,64 @@ const CallSessionScreen = ({ navigation, route }) => {
   return (
     <LinearGradient colors={['#08040F', '#110713', '#1A0A22']} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        <TouchableOpacity style={styles.backBtn} onPress={onEndCall} activeOpacity={0.85}>
+        <TouchableOpacity style={styles.backBtn} onPress={minimizeCallScreen} activeOpacity={0.85}>
           <Ionicons name="chevron-back" size={22} color={theme.colors.textPrimary} />
         </TouchableOpacity>
 
         <View style={styles.center}>
-          <View style={styles.glowRing} />
-          <View style={styles.avatarRing}>
-            <Image source={avatar} style={styles.avatar} />
+          {showVideoSurfaces ? (
+            <View style={styles.videoSurfaceLayer}>
+              {hasRemoteVideoFrame && Number.isFinite(Number(remoteVideoUid)) ? (
+                <RtcSurfaceView
+                  style={styles.remoteVideoSurface}
+                  canvas={{
+                    uid: Number(remoteVideoUid),
+                    renderMode: RenderModeType.RenderModeHidden,
+                  }}
+                />
+              ) : (
+                <View style={styles.videoFallback}>
+                  <Image source={avatar} style={styles.videoFallbackAvatar} />
+                  <Text style={styles.videoFallbackText}>Waiting for remote video...</Text>
+                </View>
+              )}
+              {isCameraEnabled ? (
+                <View style={styles.localPreviewContainer}>
+                  <RtcSurfaceView
+                    style={styles.localPreviewSurface}
+                    zOrderMediaOverlay
+                    canvas={{
+                      uid: 0,
+                      renderMode: RenderModeType.RenderModeHidden,
+                      sourceType: VideoSourceType.VideoSourceCameraPrimary,
+                    }}
+                  />
+                  {!hasLocalVideoFrame ? (
+                    <View style={styles.localPreviewOverlay}>
+                      <Ionicons name="videocam" size={20} color={theme.colors.textPrimary} />
+                    </View>
+                  ) : null}
+                </View>
+              ) : (
+                <View style={styles.localPreviewPlaceholder}>
+                  <Ionicons name="videocam-off" size={20} color={theme.colors.textPrimary} />
+                </View>
+              )}
+            </View>
+          ) : (
+            <>
+              <View style={styles.glowRing} />
+              <View style={styles.avatarRing}>
+                <Image source={avatar} style={styles.avatar} />
+              </View>
+            </>
+          )}
+          <View style={[styles.callInfoWrap, showVideoSurfaces ? styles.callInfoWrapVideo : null]}>
+            <Text style={styles.name}>{displayName}</Text>
+            <Text style={styles.statusText}>{statusText}</Text>
+            <Text style={styles.timerText}>{fmt(elapsedSeconds)}</Text>
+            {lowBalanceWarning ? <View style={styles.warning}><Ionicons name="alert-circle" size={16} color={theme.colors.warning} /><Text style={styles.warningText}>{lowBalanceWarning}</Text></View> : null}
           </View>
-          <Text style={styles.name}>{displayName}</Text>
-          <Text style={styles.statusText}>{statusText}</Text>
-          <Text style={styles.timerText}>{fmt(elapsedSeconds)}</Text>
-          {lowBalanceWarning ? <View style={styles.warning}><Ionicons name="alert-circle" size={16} color={theme.colors.warning} /><Text style={styles.warningText}>{lowBalanceWarning}</Text></View> : null}
         </View>
 
         {callMode === 'incoming' ? (
@@ -1044,6 +1382,33 @@ const CallSessionScreen = ({ navigation, route }) => {
                 color={isSpeakerOn ? activeControlIconColor : theme.colors.textPrimary}
               />
             </TouchableOpacity>
+            {isVideoCall ? (
+              <TouchableOpacity
+                style={[styles.controlBtn, isCameraEnabled ? styles.controlBtnActive : null]}
+                onPress={onToggleCamera}
+                activeOpacity={0.88}
+              >
+                <Ionicons
+                  name={isCameraEnabled ? 'videocam' : 'videocam-off'}
+                  size={22}
+                  color={isCameraEnabled ? activeControlIconColor : theme.colors.textPrimary}
+                />
+              </TouchableOpacity>
+            ) : null}
+            {isVideoCall ? (
+              <TouchableOpacity
+                style={styles.controlBtn}
+                onPress={onSwitchCamera}
+                activeOpacity={0.88}
+                disabled={!isCameraEnabled}
+              >
+                <Ionicons
+                  name="camera-reverse"
+                  size={22}
+                  color={isCameraEnabled ? theme.colors.textPrimary : 'rgba(255,255,255,0.35)'}
+                />
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity style={[styles.controlBtn, styles.endBtn]} onPress={onEndCall} activeOpacity={0.88}>
               <MaterialIcons name="call-end" size={26} color="#FFFFFF" />
             </TouchableOpacity>
@@ -1055,13 +1420,192 @@ const CallSessionScreen = ({ navigation, route }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 }, safeArea: { flex: 1, paddingHorizontal: 18, paddingBottom: 28 }, backBtn: { marginTop: 8, width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: theme.colors.borderSoft, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' }, glowRing: { position: 'absolute', width: 190, height: 190, borderRadius: 95, backgroundColor: 'rgba(255,42,163,0.12)', shadowColor: theme.colors.magenta, shadowOpacity: 0.35, shadowRadius: 28, shadowOffset: { width: 0, height: 0 } }, avatarRing: { width: 150, height: 150, borderRadius: 75, borderWidth: 1.5, borderColor: 'rgba(255,42,163,0.7)', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.02)' }, avatar: { width: 134, height: 134, borderRadius: 67 },
-  name: { marginTop: 18, color: theme.colors.textPrimary, fontSize: 30, fontWeight: '700' }, statusText: { marginTop: 10, color: theme.colors.textSecondary, fontSize: 16, fontWeight: '500' }, timerText: { marginTop: 4, color: 'rgba(255,255,255,0.82)', fontSize: 22, fontWeight: '600' },
-  warning: { marginTop: 18, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,184,0,0.4)', backgroundColor: 'rgba(255,184,0,0.12)', paddingHorizontal: 12, paddingVertical: 8 }, warningText: { color: theme.colors.warning, fontSize: 13, flexShrink: 1 },
-  incomingRow: { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center', marginBottom: 24 }, answerBtn: { width: 78, height: 78, borderRadius: 39, alignItems: 'center', justifyContent: 'center' }, acceptBtn: { backgroundColor: '#08C45A' }, rejectBtn: { backgroundColor: '#FF4545' },
-  controlsDock: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 14, borderRadius: 22, borderWidth: 1, borderColor: 'rgba(255,42,163,0.18)', backgroundColor: 'rgba(32,17,37,0.96)', paddingHorizontal: 16, paddingVertical: 12, marginBottom: 20 },
-  controlBtn: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' }, endBtn: { backgroundColor: '#FF4259' },
+  container: { flex: 1 },
+  safeArea: { flex: 1, paddingHorizontal: 18, paddingBottom: 28 },
+  backBtn: {
+    marginTop: 8,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 12,
+  },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  videoSurfaceLayer: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 26,
+    overflow: 'hidden',
+  },
+  remoteVideoSurface: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  videoFallback: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(5,7,18,0.86)',
+  },
+  videoFallbackAvatar: {
+    width: 144,
+    height: 144,
+    borderRadius: 72,
+    borderWidth: 2,
+    borderColor: 'rgba(255,42,163,0.65)',
+  },
+  videoFallbackText: {
+    marginTop: 12,
+    color: 'rgba(255,255,255,0.76)',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  localPreviewContainer: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 112,
+    height: 152,
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.45)',
+    backgroundColor: '#000000',
+  },
+  localPreviewSurface: {
+    width: '100%',
+    height: '100%',
+  },
+  localPreviewOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.42)',
+  },
+  localPreviewPlaceholder: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 112,
+    height: 152,
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.56)',
+  },
+  glowRing: {
+    position: 'absolute',
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    backgroundColor: 'rgba(255,42,163,0.12)',
+    shadowColor: theme.colors.magenta,
+    shadowOpacity: 0.35,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  avatarRing: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,42,163,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  avatar: { width: 134, height: 134, borderRadius: 67 },
+  callInfoWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  callInfoWrapVideo: {
+    marginTop: 230,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 16,
+    backgroundColor: 'rgba(5,7,18,0.46)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.11)',
+  },
+  name: {
+    marginTop: 18,
+    color: theme.colors.textPrimary,
+    fontSize: 30,
+    fontWeight: '700',
+  },
+  statusText: {
+    marginTop: 10,
+    color: theme.colors.textSecondary,
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  timerText: {
+    marginTop: 4,
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 22,
+    fontWeight: '600',
+  },
+  warning: {
+    marginTop: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,184,0,0.4)',
+    backgroundColor: 'rgba(255,184,0,0.12)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  warningText: { color: theme.colors.warning, fontSize: 13, flexShrink: 1 },
+  incomingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  answerBtn: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  acceptBtn: { backgroundColor: '#08C45A' },
+  rejectBtn: { backgroundColor: '#FF4545' },
+  controlsDock: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255,42,163,0.18)',
+    backgroundColor: 'rgba(32,17,37,0.96)',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 20,
+  },
+  controlBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  endBtn: { backgroundColor: '#FF4259' },
   controlBtnActive: { backgroundColor: '#FFFFFF' },
 });
 

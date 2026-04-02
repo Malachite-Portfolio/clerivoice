@@ -78,6 +78,18 @@ const getMessages = asyncHandler(async (req, res) => {
   return successResponse(res, data);
 });
 
+const sendMessage = asyncHandler(async (req, res) => {
+  const data = await chatService.sendMessage({
+    sessionId: req.params.sessionId,
+    senderId: req.user.id,
+    receiverId: req.body.receiverId,
+    content: req.body.content,
+    messageType: req.body.messageType,
+  });
+
+  return successResponse(res, data, 'Message sent');
+});
+
 const refreshChatToken = asyncHandler(async (req, res) => {
   const data = await chatService.renewChatToken({
     actorId: req.user.id,
@@ -97,4 +109,5 @@ module.exports = {
   refreshChatToken,
   getSessions,
   getMessages,
+  sendMessage,
 };

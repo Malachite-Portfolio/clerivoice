@@ -23,6 +23,7 @@ import { fetchHostAvailability, fetchHosts } from '../services/listenersApi';
 import { getChatSessions, getWalletSummary, requestCall, requestChat } from '../services/sessionApi';
 import { queryKeys } from '../services/queryClient';
 import { requestCallAudioPermissions } from '../services/audioPermissions';
+import { getCallStatusMessageByCode, getCallStatusMessageFromError } from '../services/callStatusMessage';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 
@@ -107,12 +108,16 @@ const ChatCallHubScreen = ({ navigation }) => {
 
   const validateHostAvailability = useCallback(async (listenerId) => {
     const availability = await fetchHostAvailability(listenerId);
-    const isOnline = String(availability?.availability || '').toUpperCase() === 'ONLINE';
+    const normalizedAvailability = String(availability?.availability || '').toUpperCase();
+    const isOnline = normalizedAvailability === 'ONLINE';
     const isVisible = availability?.isVisible !== false;
     const isEnabled = availability?.isEnabled !== false;
 
     if (!isOnline || !isVisible || !isEnabled) {
-      throw new Error(availability?.message || 'This host is currently unavailable.');
+      const reasonCode = normalizedAvailability === 'BUSY' ? 'HOST_BUSY' : 'HOST_OFFLINE';
+      const error = new Error(getCallStatusMessageByCode(reasonCode));
+      error.code = reasonCode;
+      throw error;
     }
   }, []);
 
@@ -139,7 +144,9 @@ const ChatCallHubScreen = ({ navigation }) => {
         return;
       }
 
-      const callPayload = await requestCall(host.listenerId);
+      const callPayload = await requestCall(host.listenerId, {
+        callType: 'audio',
+      });
       await refreshLiveData();
       navigation.navigate('CallSession', { callPayload, host });
     } catch (error) {
@@ -147,9 +154,7 @@ const ChatCallHubScreen = ({ navigation }) => {
         return;
       }
 
-      const message =
-        error?.response?.data?.message || error?.message || 'Unable to start call.';
-      Alert.alert('Call blocked', message);
+      Alert.alert('Call unavailable', getCallStatusMessageFromError(error));
       refreshLiveData();
     }
   };

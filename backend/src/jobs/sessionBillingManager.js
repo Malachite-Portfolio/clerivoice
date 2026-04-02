@@ -58,6 +58,10 @@ class SessionBillingManager {
     }
 
     logger.info('Starting call billing', { sessionId: key, runImmediately });
+    logger.info('[BillingLifecycle] call billing started', {
+      sessionId: key,
+      runImmediately,
+    });
     const timer = setInterval(() => {
       this.processCallTick(key).catch((error) => {
         logger.error('Call billing tick failed', { sessionId: key, error: error.message });
@@ -80,6 +84,7 @@ class SessionBillingManager {
       clearInterval(timer);
       this.callTimers.delete(key);
       logger.info('Stopped call billing', { sessionId: key });
+      logger.info('[BillingLifecycle] call billing stopped', { sessionId: key });
     }
   }
 
@@ -275,7 +280,55 @@ class SessionBillingManager {
     });
 
     if (!session || session.status !== 'ACTIVE') {
+      logger.info('Skipping call billing tick because session is not active', {
+        sessionId,
+        status: session?.status || null,
+      });
       this.stopCallBilling(sessionId);
+      return;
+    }
+
+    const [acceptedEvent, joinedEvents] = await Promise.all([
+      prisma.callEvent.findFirst({
+        where: {
+          sessionId: session.id,
+          eventType: 'call_accepted',
+        },
+        select: {
+          id: true,
+          createdAt: true,
+        },
+      }),
+      prisma.callEvent.findMany({
+        where: {
+          sessionId: session.id,
+          eventType: {
+            in: [
+              `call_media_joined:${session.userId}`,
+              `call_media_joined:${session.listenerId}`,
+            ],
+          },
+        },
+        select: {
+          eventType: true,
+        },
+      }),
+    ]);
+
+    const joinedActorIds = new Set(
+      joinedEvents.map((item) => item.eventType.replace('call_media_joined:', '')),
+    );
+    const hasBothJoinedMedia =
+      joinedActorIds.has(session.userId) && joinedActorIds.has(session.listenerId);
+
+    if (!acceptedEvent || !hasBothJoinedMedia) {
+      logger.warn('Skipping call billing tick because call is not fully connected', {
+        sessionId: session.id,
+        status: session.status,
+        hasAcceptedEvent: Boolean(acceptedEvent),
+        hasBothJoinedMedia,
+        joinedActorIds: Array.from(joinedActorIds),
+      });
       return;
     }
 
@@ -299,53 +352,81 @@ class SessionBillingManager {
       amount,
       userId: session.userId,
       listenerId: session.listenerId,
+      acceptedAt: acceptedEvent?.createdAt || null,
+      hasBothJoinedMedia,
     });
 
     try {
       const billingResult = await prisma.$transaction(
         async (tx) => {
+          const latestSession = await tx.callSession.findUnique({
+            where: { id: session.id },
+            select: {
+              id: true,
+              status: true,
+              billedMinutes: true,
+              ratePerMinute: true,
+              startedAt: true,
+              answeredAt: true,
+              userId: true,
+              listenerId: true,
+            },
+          });
+
+          // Double safety: never bill unless call is truly ACTIVE at debit time.
+          if (!latestSession || latestSession.status !== 'ACTIVE') {
+            return {
+              skipped: true,
+              skippedReason: latestSession ? 'SESSION_NOT_ACTIVE' : 'SESSION_NOT_FOUND',
+              sessionStatus: latestSession?.status || null,
+            };
+          }
+
+          const liveAmount = walletService.toNumber(latestSession.ratePerMinute);
+          const liveBillingIndex = latestSession.billedMinutes + 1;
+
           const debitTx = await walletService.debitWallet({
-            userId: session.userId,
-            amount,
+            userId: latestSession.userId,
+            amount: liveAmount,
             type: 'CALL_DEBIT',
-            relatedSessionId: session.id,
-            description: `Call billing minute ${billingIndex}`,
+            relatedSessionId: latestSession.id,
+            description: `Call billing minute ${liveBillingIndex}`,
             metadata: {
               sessionType: 'call',
-              billedMinute: billingIndex,
+              billedMinute: liveBillingIndex,
               source: 'SESSION_BILLING',
             },
-            idempotencyKey: `call:${session.id}:${billingIndex}`,
+            idempotencyKey: `call:${latestSession.id}:${liveBillingIndex}`,
             tx,
           });
 
           const creditTx = await walletService.creditWallet({
-            userId: session.listenerId,
-            amount,
+            userId: latestSession.listenerId,
+            amount: liveAmount,
             type: 'ADMIN_CREDIT',
-            relatedSessionId: session.id,
-            description: `Session earning from call minute ${billingIndex}`,
+            relatedSessionId: latestSession.id,
+            description: `Session earning from call minute ${liveBillingIndex}`,
             metadata: {
               source: 'SESSION_EARNING',
               sessionType: 'call',
-              billedMinute: billingIndex,
-              counterpartUserId: session.userId,
+              billedMinute: liveBillingIndex,
+              counterpartUserId: latestSession.userId,
             },
-            idempotencyKey: `listener-call:${session.id}:${billingIndex}`,
+            idempotencyKey: `listener-call:${latestSession.id}:${liveBillingIndex}`,
             tx,
           });
 
           const now = dayjs();
-          const answeredAt = session.answeredAt
-            ? dayjs(session.answeredAt)
-            : dayjs(session.startedAt || now);
+          const answeredAt = latestSession.answeredAt
+            ? dayjs(latestSession.answeredAt)
+            : dayjs(latestSession.startedAt || now);
           const durationSeconds = Math.max(0, now.diff(answeredAt, 'second'));
 
           const updated = await tx.callSession.update({
-            where: { id: session.id },
+            where: { id: latestSession.id },
             data: {
               billedMinutes: { increment: 1 },
-              totalAmount: { increment: amount },
+              totalAmount: { increment: liveAmount },
               durationSeconds,
             },
           });
@@ -355,6 +436,8 @@ class SessionBillingManager {
             debitTx,
             creditTx,
             durationSeconds,
+            billingIndex: liveBillingIndex,
+            amount: liveAmount,
           };
         },
         {
@@ -363,14 +446,26 @@ class SessionBillingManager {
         }
       );
 
+      if (billingResult?.skipped) {
+        logger.info('Skipping call billing at debit guard because session is no longer active', {
+          sessionId: session.id,
+          reason: billingResult.skippedReason,
+          status: billingResult.sessionStatus || null,
+        });
+        if (billingResult.sessionStatus !== 'ACTIVE') {
+          this.stopCallBilling(session.id);
+        }
+        return;
+      }
+
       logger.info('User wallet debited for call session', {
         sessionId: session.id,
-        billingIndex,
+        billingIndex: billingResult.billingIndex,
         balanceAfter: walletService.toNumber(billingResult.debitTx.balanceAfter),
       });
       logger.info('Listener earnings credited for call session', {
         sessionId: session.id,
-        billingIndex,
+        billingIndex: billingResult.billingIndex,
         balanceAfter: walletService.toNumber(billingResult.creditTx.balanceAfter),
       });
 
@@ -391,7 +486,7 @@ class SessionBillingManager {
       const rules = await getBillingRules();
       const remainingMinutes = walletService.estimateTalkTime(
         walletService.toNumber(billingResult.debitTx.balanceAfter),
-        amount
+        billingResult.amount
       );
 
       if (remainingMinutes <= Number(rules.lowBalanceMinutesThreshold)) {

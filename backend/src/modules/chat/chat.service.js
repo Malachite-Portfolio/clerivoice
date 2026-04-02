@@ -2,6 +2,7 @@ const { prisma } = require('../../config/prisma');
 const { logger } = require('../../config/logger');
 const { AppError } = require('../../utils/appError');
 const sessionGuardService = require('../../services/sessionGuard.service');
+const privacyModerationService = require('../../services/privacyModeration.service');
 const pushNotificationService = require('../../services/pushNotification.service');
 const {
   emitHostStatusChanged,
@@ -124,7 +125,11 @@ const finalizeChatSession = async ({
 };
 
 const requestChat = async ({ userId, listenerId }) => {
-  const check = await sessionGuardService.canStartChat({ userId, listenerId });
+  const check = await sessionGuardService.canStartChat({
+    userId,
+    listenerId,
+    actorId: userId,
+  });
 
   const session = await prisma.chatSession.create({
     data: {
@@ -220,6 +225,7 @@ const acceptChat = async ({ listenerId, sessionId }) => {
     await sessionGuardService.canStartChat({
       userId: session.userId,
       listenerId: session.listenerId,
+      actorId: listenerId,
     });
   } catch (error) {
     await finalizeChatSession({
@@ -483,6 +489,7 @@ const sendMessage = async ({ sessionId, senderId, receiverId, messageType = 'tex
       await sessionGuardService.canStartChat({
         userId: session.userId,
         listenerId: session.listenerId,
+        actorId: senderId,
       });
     } catch (error) {
       await finalizeChatSession({
@@ -532,6 +539,33 @@ const sendMessage = async ({ sessionId, senderId, receiverId, messageType = 'tex
     throw new AppError('Chat session is not active', 400, 'CHAT_NOT_ACTIVE');
   }
 
+  await privacyModerationService.assertNotSuspended({
+    userId: senderId,
+    action: 'SEND_CHAT_MESSAGE',
+  });
+
+  const moderation = privacyModerationService.detectRestrictedContent(content);
+  if (moderation.blocked) {
+    const suspension = await privacyModerationService.suspendForRestrictedContact({
+      userId: senderId,
+      sessionId,
+      sessionType: 'CHAT',
+      originalContent: content,
+      detectedReasons: moderation.reasons,
+    });
+
+    throw new AppError(
+      privacyModerationService.ACCOUNT_SUSPENSION_MESSAGE,
+      403,
+      'RESTRICTED_CONTACT_INFO',
+      {
+        sessionId,
+        detectedReasons: moderation.reasons,
+        suspendedUntil: suspension.suspendedUntil,
+      },
+    );
+  }
+
   const message = await prisma.chatMessage.create({
     data: {
       sessionId,
@@ -557,6 +591,7 @@ const sendMessage = async ({ sessionId, senderId, receiverId, messageType = 'tex
         receiverId,
         receiverRole,
         sessionId,
+        messageId: message.id,
         senderId,
         senderName: senderProfile?.displayName || 'New message',
         senderAvatar: senderProfile?.profileImageUrl || null,

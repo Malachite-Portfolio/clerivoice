@@ -37,7 +37,7 @@ const getCurrentSessionIdForRoute = (route) => {
   return null;
 };
 
-const shouldSuppressForegroundNotification = (notification) => {
+export const shouldUseInAppChatBanner = (notification) => {
   if (currentAppState !== 'active') {
     return false;
   }
@@ -46,11 +46,25 @@ const shouldSuppressForegroundNotification = (notification) => {
   const route = getCurrentRouteSnapshot();
   const currentSessionId = getCurrentSessionIdForRoute(route);
 
+  return (
+    data?.type === 'chat_message' &&
+    route?.name === 'ChatSession' &&
+    currentSessionId === data?.sessionId
+  );
+};
+
+const shouldSuppressForegroundNotification = (notification) => {
+  if (currentAppState !== 'active') {
+    return false;
+  }
+
+  const data = notification?.request?.content?.data || {};
+
   if (data?.type === 'incoming_call') {
     return true;
   }
 
-  if (data?.type === 'chat_message' && route?.name === 'ChatSession' && currentSessionId === data?.sessionId) {
+  if (shouldUseInAppChatBanner(notification)) {
     return true;
   }
 
@@ -110,6 +124,10 @@ const buildIncomingCallNavigationIntent = (data) => ({
   params: {
     incomingRequest: {
       sessionId: data?.sessionId,
+      callType:
+        String(data?.callType || '').trim().toLowerCase() === 'video'
+          ? 'video'
+          : 'audio',
       requester: {
         id: data?.requesterId || null,
         displayName: data?.requesterName || 'Incoming call',

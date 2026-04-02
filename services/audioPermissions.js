@@ -49,3 +49,55 @@ export const requestCallAudioPermissions = async () => {
     permissions: results,
   };
 };
+
+export const requestVideoCallPermissions = async () => {
+  if (Platform.OS !== 'android') {
+    logAudioPermission('videoPermissionResult', {
+      platform: Platform.OS,
+      granted: true,
+      permissions: [],
+    });
+    return {
+      granted: true,
+      permissions: {},
+    };
+  }
+
+  const requiredPermissions = [
+    PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+    PermissionsAndroid.PERMISSIONS.CAMERA,
+  ].filter(Boolean);
+
+  const optionalPermissions = [];
+  if (Platform.Version >= 31 && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
+    optionalPermissions.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
+  }
+
+  logAudioPermission('videoPermissionRequestStart', {
+    required: requiredPermissions,
+    optional: optionalPermissions,
+  });
+
+  const results = {};
+  for (const permission of requiredPermissions) {
+    results[permission] = await PermissionsAndroid.request(permission);
+  }
+  for (const permission of optionalPermissions) {
+    results[permission] = await PermissionsAndroid.request(permission);
+  }
+
+  const granted = requiredPermissions.every(
+    (permission) =>
+      results[permission] === PermissionsAndroid.RESULTS.GRANTED,
+  );
+
+  logAudioPermission('videoPermissionResult', {
+    granted,
+    permissions: results,
+  });
+
+  return {
+    granted,
+    permissions: results,
+  };
+};

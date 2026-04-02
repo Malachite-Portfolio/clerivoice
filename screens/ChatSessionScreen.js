@@ -12,7 +12,11 @@ import { addDemoChatMessage, addDemoChatReply } from '../services/demoMode';
 import { connectRealtimeSocket, emitWithAck, getRealtimeSocket } from '../services/realtimeSocket';
 import { endChatSession, getChatMessages, refreshChatToken, requestCall } from '../services/sessionApi';
 import { initAgoraChatSession, leaveAgoraChatSession, renewAgoraChatToken } from '../services/agoraChatService';
-import { requestCallAudioPermissions } from '../services/audioPermissions';
+import {
+  requestCallAudioPermissions,
+  requestVideoCallPermissions,
+} from '../services/audioPermissions';
+import { getCallStatusMessageFromError } from '../services/callStatusMessage';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const PATTERN = [{ t: 20, l: 24, s: 54 }, { t: 110, l: 180, s: 28 }, { t: 160, l: 42, s: 16 }, { t: 280, l: 220, s: 44 }, { t: 380, l: 70, s: 24 }, { t: 460, l: 200, s: 18 }, { t: 520, l: 18, s: 60 }, { t: 620, l: 190, s: 26 }];
@@ -42,6 +46,43 @@ const logChatDebug = (label, payload) => {
   console.log(`[ChatSessionScreen] ${label}`, payload);
 };
 
+const SUSPENSION_CODES = new Set(['ACCOUNT_SUSPENDED', 'RESTRICTED_CONTACT_INFO']);
+const SUSPENSION_MESSAGE =
+  'Your account is temporarily suspended for 2 hours due to sharing restricted contact information.';
+
+const getErrorCode = (error) =>
+  String(error?.code || error?.response?.data?.code || '')
+    .trim()
+    .toUpperCase();
+
+const getSuspendedUntilFromError = (error) =>
+  error?.data?.suspendedUntil ||
+  error?.response?.data?.data?.suspendedUntil ||
+  error?.response?.data?.suspendedUntil ||
+  null;
+
+const getSuspendedUntilFromSession = (sessionData) =>
+  sessionData?.user?.suspendedUntil || null;
+
+const toDateMs = (value) => {
+  const dateMs = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(dateMs) ? dateMs : NaN;
+};
+
+const formatSuspendedUntil = (value) => {
+  const dateMs = toDateMs(value);
+  if (!Number.isFinite(dateMs)) {
+    return '';
+  }
+
+  return new Date(dateMs).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+};
+
 const ChatSessionScreen = ({ navigation, route }) => {
   const { session: authSession } = useAuth();
   const payload = route?.params?.chatPayload;
@@ -57,6 +98,7 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const [lowBalanceWarning, setLowBalanceWarning] = useState('');
   const [targetUserId, setTargetUserId] = useState(null);
   const [remoteTyping, setRemoteTyping] = useState(false);
+  const [suspendedUntil, setSuspendedUntil] = useState(getSuspendedUntilFromSession(authSession));
   const timerRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const demoReplyTimeoutRef = useRef(null);
@@ -67,6 +109,18 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const title = useMemo(() => host?.name || 'Conversation', [host?.name]);
   const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
   const listenerId = payload?.session?.listenerId || host?.listenerId || null;
+
+  const isSuspended = useMemo(() => {
+    const suspendedUntilMs = toDateMs(suspendedUntil);
+    return Number.isFinite(suspendedUntilMs) && suspendedUntilMs > Date.now();
+  }, [suspendedUntil]);
+
+  useEffect(() => {
+    const nextSuspendedUntil = getSuspendedUntilFromSession(authSession);
+    if (nextSuspendedUntil) {
+      setSuspendedUntil(nextSuspendedUntil);
+    }
+  }, [authSession]);
 
   // Allow the first message to send immediately while history loads.
   useEffect(() => {
@@ -323,6 +377,14 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const onSendMessage = async () => {
     const trimmed = inputValue.trim();
     if (!trimmed || !targetUserId) return;
+    if (isSuspended) {
+      const until = formatSuspendedUntil(suspendedUntil);
+      return Alert.alert(
+        'Account suspended',
+        until ? `${SUSPENSION_MESSAGE}\n\nSuspended until ${until}.` : SUSPENSION_MESSAGE,
+      );
+    }
+
     const normalizedStatus = String(sessionStatus || '').toUpperCase();
     if (['ENDED', 'CANCELLED', 'REJECTED'].includes(normalizedStatus)) {
       return Alert.alert('Chat ended', 'This conversation is no longer active.');
@@ -385,7 +447,23 @@ const ChatSessionScreen = ({ navigation, route }) => {
         message: error?.message || 'Unknown error',
       });
       if (isUnauthorizedApiError(error)) return;
-      Alert.alert(error?.code === 'INSUFFICIENT_BALANCE' ? 'Insufficient Balance' : 'Message failed', error?.message || 'Unable to send message right now.');
+
+      const errorCode = getErrorCode(error);
+      if (SUSPENSION_CODES.has(errorCode)) {
+        const nextSuspendedUntil = getSuspendedUntilFromError(error);
+        if (nextSuspendedUntil) {
+          setSuspendedUntil(nextSuspendedUntil);
+        }
+
+        const until = formatSuspendedUntil(nextSuspendedUntil || suspendedUntil);
+        Alert.alert(
+          'Account suspended',
+          until ? `${SUSPENSION_MESSAGE}\n\nSuspended until ${until}.` : SUSPENSION_MESSAGE,
+        );
+        return;
+      }
+
+      Alert.alert(errorCode === 'INSUFFICIENT_BALANCE' ? 'Insufficient Balance' : 'Message failed', error?.message || 'Unable to send message right now.');
     }
   };
 
@@ -410,43 +488,96 @@ const ChatSessionScreen = ({ navigation, route }) => {
     }
   };
 
-  const onStartCall = async () => {
-    if (isListener || !listenerId) return Alert.alert('Voice call unavailable', 'Voice call can be started from the user side only.');
+  const onStartCallByType = async (callType = 'audio') => {
+    const normalizedCallType = callType === 'video' ? 'video' : 'audio';
+
+    if (isListener || !listenerId) {
+      return Alert.alert(
+        normalizedCallType === 'video'
+          ? 'Video call unavailable'
+          : 'Voice call unavailable',
+        `${normalizedCallType === 'video' ? 'Video' : 'Voice'} call can be started from the user side only.`,
+      );
+    }
     try {
-      const permissionResult = await requestCallAudioPermissions();
-      logChatDebug('microphonePermissionPreflight', {
+      const permissionResult =
+        normalizedCallType === 'video'
+          ? await requestVideoCallPermissions()
+          : await requestCallAudioPermissions();
+      logChatDebug(
+        normalizedCallType === 'video'
+          ? 'videoPermissionPreflight'
+          : 'microphonePermissionPreflight',
+        {
         listenerId,
+        callType: normalizedCallType,
         granted: permissionResult?.granted === true,
         permissions: permissionResult?.permissions || null,
-        source: 'ChatSessionScreen.onStartCall',
-      });
+        source: 'ChatSessionScreen.onStartCallByType',
+      },
+      );
       if (!permissionResult?.granted) {
         Alert.alert(
-          'Microphone permission needed',
-          'Enable microphone permission to start a voice call.',
+          normalizedCallType === 'video'
+            ? 'Camera and microphone permission needed'
+            : 'Microphone permission needed',
+          normalizedCallType === 'video'
+            ? 'Enable camera and microphone permission to start a video call.'
+            : 'Enable microphone permission to start a voice call.',
         );
         return;
       }
 
       logChatDebug('callRequestStart', {
         listenerId,
+        callType: normalizedCallType,
       });
-      const callPayload = await requestCall(listenerId);
+      const callPayload = await requestCall(listenerId, {
+        callType: normalizedCallType,
+      });
       logChatDebug('callRequestSuccess', {
         sessionId: callPayload?.session?.id || null,
         listenerId,
+        callType:
+          callPayload?.session?.callType || normalizedCallType,
       });
       navigation.navigate('CallSession', { callPayload, host });
     } catch (error) {
       logChatDebug('callRequestFailure', {
         listenerId,
+        callType: normalizedCallType,
         message: error?.response?.data?.message || error?.message || 'Unknown error',
       });
-      if (!isUnauthorizedApiError(error)) Alert.alert('Call blocked', error?.response?.data?.message || error?.message || 'Unable to start call right now.');
+      const errorCode = getErrorCode(error);
+      if (SUSPENSION_CODES.has(errorCode)) {
+        const nextSuspendedUntil = getSuspendedUntilFromError(error);
+        if (nextSuspendedUntil) {
+          setSuspendedUntil(nextSuspendedUntil);
+        }
+        const until = formatSuspendedUntil(nextSuspendedUntil || suspendedUntil);
+        Alert.alert(
+          'Account suspended',
+          until ? `${SUSPENSION_MESSAGE}\n\nSuspended until ${until}.` : SUSPENSION_MESSAGE,
+        );
+        return;
+      }
+      if (!isUnauthorizedApiError(error)) {
+        Alert.alert('Call unavailable', getCallStatusMessageFromError(error));
+      }
     }
   };
 
-  const subtitle = remoteTyping ? 'Typing...' : sessionStatus === 'ACTIVE' ? 'Online' : sessionStatus === 'ENDED' ? 'Conversation ended' : isDemoSession ? 'Demo session ready' : 'Waiting to connect';
+  const subtitle = isSuspended
+    ? 'Account temporarily suspended'
+    : remoteTyping
+      ? 'Typing...'
+      : sessionStatus === 'ACTIVE'
+        ? 'Online'
+        : sessionStatus === 'ENDED'
+          ? 'Conversation ended'
+          : isDemoSession
+            ? 'Demo session ready'
+            : 'Waiting to connect';
   const onOpenMenu = () => {
     Alert.alert(title, 'Choose an action for this conversation.', [
       { text: 'Cancel', style: 'cancel' },
@@ -478,13 +609,23 @@ const ChatSessionScreen = ({ navigation, route }) => {
               </View>
             </TouchableOpacity>
             <View style={styles.headerActions}>
-              <TouchableOpacity style={styles.iconBtn} onPress={onStartCall} activeOpacity={0.85}><Ionicons name="call-outline" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
-              <TouchableOpacity style={styles.iconBtn} onPress={() => Alert.alert('Video calling', 'Video calls are not available yet.')} activeOpacity={0.85}><Ionicons name="videocam-outline" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
+              <TouchableOpacity style={styles.iconBtn} onPress={() => onStartCallByType('audio')} activeOpacity={0.85}><Ionicons name="call-outline" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
+              <TouchableOpacity style={styles.iconBtn} onPress={() => onStartCallByType('video')} activeOpacity={0.85}><Ionicons name="videocam-outline" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
               <TouchableOpacity style={styles.iconBtn} onPress={onOpenMenu} activeOpacity={0.85}><Ionicons name="ellipsis-vertical" size={18} color={theme.colors.textPrimary} /></TouchableOpacity>
             </View>
           </View>
 
           {lowBalanceWarning ? <View style={styles.warning}><Ionicons name="alert-circle" size={16} color={theme.colors.warning} /><Text style={styles.warningText}>{lowBalanceWarning}</Text></View> : null}
+          {isSuspended ? (
+            <View style={styles.suspensionWarning}>
+              <Ionicons name="ban" size={16} color="#FF5F7A" />
+              <Text style={styles.suspensionWarningText}>
+                {formatSuspendedUntil(suspendedUntil)
+                  ? `Suspended until ${formatSuspendedUntil(suspendedUntil)}`
+                  : SUSPENSION_MESSAGE}
+              </Text>
+            </View>
+          ) : null}
 
           <View style={styles.chatSurface}>
             <View style={styles.pattern}>
@@ -528,13 +669,19 @@ const ChatSessionScreen = ({ navigation, route }) => {
               placeholderTextColor="rgba(255,255,255,0.34)"
               style={styles.input}
               multiline
+              editable={!isSuspended}
               onFocus={() => {
                 requestAnimationFrame(() => {
                   flatListRef.current?.scrollToEnd({ animated: true });
                 });
               }}
             />
-            <TouchableOpacity style={[styles.sendBtn, !inputValue.trim() && styles.sendBtnDisabled]} onPress={onSendMessage} activeOpacity={0.85}>
+            <TouchableOpacity
+              style={[styles.sendBtn, (!inputValue.trim() || isSuspended) && styles.sendBtnDisabled]}
+              onPress={onSendMessage}
+              activeOpacity={0.85}
+              disabled={!inputValue.trim() || isSuspended}
+            >
               <Ionicons name="send" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
@@ -549,6 +696,8 @@ const styles = StyleSheet.create({
   header: { marginTop: 6, flexDirection: 'row', alignItems: 'center' }, headerMain: { flex: 1, flexDirection: 'row', alignItems: 'center' }, headerAvatar: { width: 44, height: 44, borderRadius: 22, borderWidth: 1.5, borderColor: theme.colors.magenta, marginRight: 10 }, headerName: { color: theme.colors.textPrimary, fontSize: 18, fontWeight: '700' }, statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 }, statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 }, statusDotOn: { backgroundColor: theme.colors.success }, statusDotOff: { backgroundColor: 'rgba(255,255,255,0.28)' }, headerStatus: { color: theme.colors.textSecondary, fontSize: 12 },
   headerActions: { flexDirection: 'row', gap: 8 }, iconBtn: { width: 38, height: 38, borderRadius: 19, borderWidth: 1, borderColor: theme.colors.borderSoft, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   warning: { marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,184,0,0.4)', backgroundColor: 'rgba(255,184,0,0.12)', paddingHorizontal: 12, paddingVertical: 8 }, warningText: { color: theme.colors.warning, fontSize: 13, flex: 1 },
+  suspensionWarning: { marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,95,122,0.45)', backgroundColor: 'rgba(255,95,122,0.16)', paddingHorizontal: 12, paddingVertical: 8 },
+  suspensionWarningText: { color: theme.colors.textPrimary, fontSize: 13, flex: 1 },
   chatSurface: { flex: 1, minHeight: 0, marginTop: 14, borderRadius: 28, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', backgroundColor: 'rgba(8,15,26,0.82)' }, pattern: { ...StyleSheet.absoluteFillObject }, patternBubble: { position: 'absolute', borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)', backgroundColor: 'rgba(255,255,255,0.015)' },
   messageListView: { flex: 1, minHeight: 0 },
   messageList: { paddingHorizontal: 12, paddingTop: 16, paddingBottom: 18 }, messageListEmpty: { flexGrow: 1, justifyContent: 'center' }, messageWrap: { marginBottom: 10 }, messageWrapMine: { alignItems: 'flex-end' }, messageWrapOther: { alignItems: 'flex-start' },

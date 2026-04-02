@@ -2,6 +2,7 @@ const { z } = require('zod');
 
 const callRequestSchema = z.object({
   listenerId: z.string().min(10),
+  callType: z.enum(['audio', 'video']).optional(),
 });
 
 const callActionSchema = z.object({

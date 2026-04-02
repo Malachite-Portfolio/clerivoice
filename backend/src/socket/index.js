@@ -226,11 +226,12 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
       }
     });
 
-    socket.on('call_request', async ({ listenerId }, callback) => {
+    socket.on('call_request', async ({ listenerId, callType }, callback) => {
       try {
         const data = await callService.requestCall({
           userId,
           listenerId,
+          callType,
         });
 
         socket.join(`session:call:${data.session.id}`);

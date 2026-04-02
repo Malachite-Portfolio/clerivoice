@@ -159,6 +159,8 @@ model User {
   isPhoneVerified Boolean    @default(false)
   profileImageUrl String?
   blockedReason   String?
+  suspendedUntil  DateTime?
+  suspensionReason String?
   referredById    String?
   referralApplied Boolean    @default(false)
   deletedAt       DateTime?
@@ -191,11 +193,29 @@ model User {
 
   sentMessages     ChatMessage[] @relation("MessageSender")
   receivedMessages ChatMessage[] @relation("MessageReceiver")
+  moderationViolations ModerationViolation[]
 
   supportTickets SupportTicket[]
 
   @@index([role, status])
   @@index([status, createdAt])
+}
+
+model ModerationViolation {
+  id              String   @id @default(cuid())
+  userId          String
+  sessionId       String?
+  sessionType     String   @default("CHAT")
+  originalContent String
+  detectedReasons String[]
+  suspendedUntil  DateTime
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([createdAt])
 }
 
 model ListenerProfile {

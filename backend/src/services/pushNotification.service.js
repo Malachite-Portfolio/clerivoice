@@ -198,6 +198,7 @@ const sendChatMessagePush = async ({
   receiverId,
   receiverRole,
   sessionId,
+  messageId,
   senderId,
   senderName,
   senderAvatar,
@@ -228,12 +229,14 @@ const sendChatMessagePush = async ({
     data: {
       type: 'chat_message',
       sessionId,
+      messageId,
       senderId,
       senderName,
       senderAvatar: senderAvatar || '',
       senderRole: String(receiverRole || '').trim().toUpperCase() === 'LISTENER' ? 'USER' : 'LISTENER',
       userId: sessionUserId,
       listenerId: sessionListenerId,
+      preview: preview || '',
     },
   }));
 
@@ -254,7 +257,11 @@ const sendIncomingCallPush = async ({
   requesterAvatar,
   ratePerMinute,
   requestedAt,
+  callType,
 }) => {
+  const normalizedCallType =
+    String(callType || '').trim().toLowerCase() === 'video' ? 'video' : 'audio';
+
   const devices = await getActivePushDevices({
     userId: listenerId,
     appFlavor: 'listener',
@@ -270,14 +277,18 @@ const sendIncomingCallPush = async ({
 
   const messages = devices.map((device) => ({
     to: device.expoPushToken,
-    title: requesterName || 'Incoming call',
-    body: 'Tap to answer this live call.',
+    title: requesterName || `Incoming ${normalizedCallType} call`,
+    body:
+      normalizedCallType === 'video'
+        ? 'Tap to answer this live video call.'
+        : 'Tap to answer this live call.',
     sound: 'default',
     priority: 'high',
     channelId: 'calls',
     data: {
       type: 'incoming_call',
       sessionId,
+      callType: normalizedCallType,
       requesterId,
       requesterName,
       requesterAvatar: requesterAvatar || '',

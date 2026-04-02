@@ -2,11 +2,17 @@ const { prisma } = require('../config/prisma');
 const { env } = require('../config/env');
 const { estimateTalkTime, toNumber } = require('./wallet.service');
 const { AppError } = require('../utils/appError');
+const privacyModerationService = require('./privacyModeration.service');
 const { INSUFFICIENT_BALANCE } = require('../constants/errors');
 
-const HOST_UNAVAILABLE_ERROR = {
-  message: 'This host is currently unavailable.',
-  code: 'HOST_UNAVAILABLE',
+const HOST_OFFLINE_ERROR = {
+  message: 'Host is offline',
+  code: 'HOST_OFFLINE',
+};
+
+const HOST_BUSY_ERROR = {
+  message: 'Host is on another call',
+  code: 'HOST_BUSY',
 };
 
 const DEFAULT_BILLING_RULES = {
@@ -37,14 +43,14 @@ const getListenerProfile = async (listenerId) => {
   });
 
   if (!listener || !listener.user) {
-    throw new AppError(HOST_UNAVAILABLE_ERROR.message, 404, HOST_UNAVAILABLE_ERROR.code, {
+    throw new AppError(HOST_OFFLINE_ERROR.message, 404, HOST_OFFLINE_ERROR.code, {
       listenerId,
       reason: 'NOT_FOUND',
     });
   }
 
   if (listener.user.deletedAt || listener.user.status !== 'ACTIVE') {
-    throw new AppError(HOST_UNAVAILABLE_ERROR.message, 400, HOST_UNAVAILABLE_ERROR.code, {
+    throw new AppError(HOST_OFFLINE_ERROR.message, 400, HOST_OFFLINE_ERROR.code, {
       listenerId,
       reason: 'ACCOUNT_INACTIVE',
       userStatus: listener.user.status,
@@ -52,31 +58,46 @@ const getListenerProfile = async (listenerId) => {
   }
 
   if (!listener.isEnabled) {
-    throw new AppError(HOST_UNAVAILABLE_ERROR.message, 400, HOST_UNAVAILABLE_ERROR.code, {
+    throw new AppError(HOST_OFFLINE_ERROR.message, 400, HOST_OFFLINE_ERROR.code, {
       listenerId,
       reason: 'HOST_DISABLED',
     });
   }
 
   if (typeof listener.isVisible === 'boolean' && listener.isVisible === false) {
-    throw new AppError(HOST_UNAVAILABLE_ERROR.message, 400, HOST_UNAVAILABLE_ERROR.code, {
+    throw new AppError(HOST_OFFLINE_ERROR.message, 400, HOST_OFFLINE_ERROR.code, {
       listenerId,
       reason: 'HOST_HIDDEN',
     });
   }
 
-  if (listener.availability !== 'ONLINE') {
-    throw new AppError(HOST_UNAVAILABLE_ERROR.message, 400, HOST_UNAVAILABLE_ERROR.code, {
+  const availability = String(listener.availability || '').toUpperCase();
+
+  if (availability === 'BUSY') {
+    throw new AppError(HOST_BUSY_ERROR.message, 400, HOST_BUSY_ERROR.code, {
+      listenerId,
+      reason: 'HOST_BUSY',
+      availability,
+    });
+  }
+
+  if (availability !== 'ONLINE') {
+    throw new AppError(HOST_OFFLINE_ERROR.message, 400, HOST_OFFLINE_ERROR.code, {
       listenerId,
       reason: 'HOST_OFFLINE',
-      availability: listener.availability,
+      availability,
     });
   }
 
   return listener;
 };
 
-const checkCanStartSession = async ({ userId, listenerId, mode }) => {
+const checkCanStartSession = async ({ userId, listenerId, mode, actorId = userId }) => {
+  await privacyModerationService.assertNotSuspended({
+    userId: actorId,
+    action: mode === 'chat' ? 'START_CHAT' : 'START_CALL',
+  });
+
   const rules = await getBillingRules();
   const listener = await getListenerProfile(listenerId);
 
@@ -128,11 +149,11 @@ const checkCanStartSession = async ({ userId, listenerId, mode }) => {
   };
 };
 
-const canStartChat = ({ userId, listenerId }) =>
-  checkCanStartSession({ userId, listenerId, mode: 'chat' });
+const canStartChat = ({ userId, listenerId, actorId }) =>
+  checkCanStartSession({ userId, listenerId, actorId, mode: 'chat' });
 
-const canStartCall = ({ userId, listenerId }) =>
-  checkCanStartSession({ userId, listenerId, mode: 'call' });
+const canStartCall = ({ userId, listenerId, actorId }) =>
+  checkCanStartSession({ userId, listenerId, actorId, mode: 'call' });
 
 module.exports = {
   getBillingRules,

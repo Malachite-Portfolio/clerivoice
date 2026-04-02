@@ -1,6 +1,5 @@
 import axios from 'axios';
 import { API_BASE_URL, AUTH_DEBUG_ENABLED, LIVE_CONFIG_ERROR } from '../constants/api';
-import { isDemoSessionActive } from './demoMode';
 
 let accessToken = null;
 let unauthorizedHandler = null;
@@ -40,18 +39,6 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (isUnauthorizedApiError(error) && typeof unauthorizedHandler === 'function') {
-      if (isDemoSessionActive()) {
-        if (AUTH_DEBUG_ENABLED) {
-          console.warn('[ExpoAuth] unauthorized API response ignored in demo mode', {
-            url: error?.config?.url || null,
-            method: error?.config?.method || null,
-            status: error?.response?.status ?? null,
-          });
-        }
-
-        return Promise.reject(error);
-      }
-
       if (AUTH_DEBUG_ENABLED) {
         console.warn('[ExpoAuth] unauthorized API response detected', {
           url: error?.config?.url || null,

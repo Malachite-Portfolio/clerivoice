@@ -20,6 +20,7 @@ import { getChatSessions, getInboxItems, getWalletSummary, requestCall, requestC
 import { connectRealtimeSocket, subscribeRealtimeSocketState } from '../services/realtimeSocket';
 import { queryKeys } from '../services/queryClient';
 import { requestCallAudioPermissions } from '../services/audioPermissions';
+import { getCallStatusMessageByCode, getCallStatusMessageFromError } from '../services/callStatusMessage';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const TABS = ['Verified', 'Inbox'];
@@ -52,6 +53,11 @@ const HomeScreen = ({ navigation }) => {
     staleTime: 8000,
     enabled: Boolean(session?.accessToken) && activeTab === 'Inbox',
   });
+
+  const inboxItems = useMemo(
+    () => (inboxQuery.data || []).filter((item) => item?.type === 'chat'),
+    [inboxQuery.data],
+  );
 
   const refreshLiveData = useCallback(async () => {
     await Promise.all([
@@ -126,8 +132,14 @@ const HomeScreen = ({ navigation }) => {
 
   const validateHostAvailability = useCallback(async (listenerId) => {
     const availability = await fetchHostAvailability(listenerId);
-    if (up(availability?.availability) !== 'ONLINE' || availability?.isVisible === false || availability?.isEnabled === false) {
-      throw new Error(availability?.message || 'This host is currently unavailable.');
+    const isVisible = availability?.isVisible !== false;
+    const isEnabled = availability?.isEnabled !== false;
+    const normalizedAvailability = up(availability?.availability);
+    if (normalizedAvailability !== 'ONLINE' || !isVisible || !isEnabled) {
+      const reasonCode = normalizedAvailability === 'BUSY' ? 'HOST_BUSY' : 'HOST_OFFLINE';
+      const error = new Error(getCallStatusMessageByCode(reasonCode));
+      error.code = reasonCode;
+      throw error;
     }
   }, []);
 
@@ -150,11 +162,15 @@ const HomeScreen = ({ navigation }) => {
         return;
       }
 
-      const callPayload = await requestCall(host.listenerId);
+      const callPayload = await requestCall(host.listenerId, {
+        callType: 'audio',
+      });
       await refreshLiveData();
       navigation.navigate('CallSession', { callPayload, host });
     } catch (error) {
-      if (!isUnauthorizedApiError(error)) Alert.alert('Unable to start call', error?.response?.data?.message || error?.message || 'This host is currently unavailable.');
+      if (!isUnauthorizedApiError(error)) {
+        Alert.alert('Call unavailable', getCallStatusMessageFromError(error));
+      }
     }
   };
 
@@ -202,10 +218,11 @@ const HomeScreen = ({ navigation }) => {
 
   const openInboxItem = (item) => {
     if (!session?.accessToken) return resetToAuthEntry();
+    if (item?.type !== 'chat') {
+      return Alert.alert('Unavailable', 'Only chat conversations are shown in Inbox.');
+    }
     const host = { name: item?.participant?.name || 'Conversation', avatar: img(item?.participant?.profileImageUrl), listenerId: item?.session?.listenerId || null, userId: item?.participant?.id || null, isOnline: up(item?.status) === 'ACTIVE' };
-    if (item?.type === 'chat') return navigation.navigate('ChatSession', { chatPayload: { session: item.session, agora: null }, host });
-    if (up(item?.status) === 'ENDED') return Alert.alert('Call ended', 'This call is no longer active.');
-    navigation.navigate('CallSession', { callPayload: { session: item.session, agora: null }, host });
+    return navigation.navigate('ChatSession', { chatPayload: { session: item.session, agora: null }, host });
   };
 
   const openWallet = () => {
@@ -298,8 +315,8 @@ const HomeScreen = ({ navigation }) => {
             <View style={styles.inboxWrap}>
               {inboxQuery.isLoading && !inboxQuery.data ? <View style={styles.stateCard}><Text style={styles.stateText}>Loading your real conversations...</Text></View> : null}
               {inboxQuery.isError && !inboxQuery.data ? <View style={styles.errorCard}><Text style={styles.errorTitle}>Unable to load inbox.</Text><TouchableOpacity style={styles.smallBtn} onPress={refreshLiveData}><Text style={styles.smallBtnText}>Retry</Text></TouchableOpacity></View> : null}
-              {!inboxQuery.isLoading && !inboxQuery.isError && !(inboxQuery.data || []).length ? <View style={styles.emptyCard}><Text style={styles.emptyTitle}>Start conversation...</Text><Text style={styles.emptySub}>Your real chat and call history will appear here once you connect with a host.</Text></View> : null}
-              {(inboxQuery.data || []).map((item) => (
+              {!inboxQuery.isLoading && !inboxQuery.isError && !inboxItems.length ? <View style={styles.emptyCard}><Text style={styles.emptyTitle}>Start conversation...</Text><Text style={styles.emptySub}>Your real chat history will appear here once you connect with a host.</Text></View> : null}
+              {inboxItems.map((item) => (
                 <TouchableOpacity key={item.id} style={styles.inboxRow} activeOpacity={0.88} onPress={() => openInboxItem(item)}>
                   <View style={styles.inboxAvatarWrap}>
                     <Image source={img(item?.participant?.profileImageUrl)} style={styles.inboxAvatar} />
