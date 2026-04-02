@@ -7,11 +7,17 @@ import theme from '../constants/theme';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
 import { useAppVariant } from '../context/AppVariantContext';
+import { useCallSession } from '../context/CallSessionContext';
 import AppLogo from '../components/AppLogo';
-import { getAuthEntryRouteName, getHomeRouteName } from '../navigation/navigationRef';
+import {
+  getAuthEntryRouteName,
+  getCurrentRouteSnapshot,
+  getHomeRouteName,
+} from '../navigation/navigationRef';
 
 const SplashScreen = ({ navigation }) => {
   const { session, isHydrated } = useAuth();
+  const { activeCall } = useCallSession();
   const { appDisplayName, isListenerApp } = useAppVariant();
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.9)).current;
@@ -31,10 +37,34 @@ const SplashScreen = ({ navigation }) => {
     ]).start();
 
     const timer = setTimeout(() => {
+      const currentRoute = getCurrentRouteSnapshot();
+      if (currentRoute?.name && currentRoute.name !== 'Splash') {
+        if (AUTH_DEBUG_ENABLED) {
+          console.log('[SplashScreen] navigation reset skipped because route already changed', {
+            currentRoute: currentRoute.name,
+          });
+        }
+        return;
+      }
+
       if (!isHydrated) {
         return;
       }
       if (session?.accessToken) {
+        if (activeCall?.sessionId && activeCall?.params) {
+          if (AUTH_DEBUG_ENABLED) {
+            console.log('[SplashScreen] restoring active call route from global state', {
+              sessionId: activeCall.sessionId,
+              mode: activeCall.mode,
+            });
+          }
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'CallSession', params: activeCall.params }],
+          });
+          return;
+        }
+
         if (AUTH_DEBUG_ENABLED) {
             console.log('[SplashScreen] navigating to authenticated route', {
               role: session?.user?.role || null,
@@ -60,7 +90,17 @@ const SplashScreen = ({ navigation }) => {
     }, 2500);
 
     return () => clearTimeout(timer);
-  }, [isHydrated, navigation, opacity, scale, session?.accessToken, session?.user?.role]);
+  }, [
+    activeCall?.mode,
+    activeCall?.params,
+    activeCall?.sessionId,
+    isHydrated,
+    navigation,
+    opacity,
+    scale,
+    session?.accessToken,
+    session?.user?.role,
+  ]);
 
   return (
     <LinearGradient

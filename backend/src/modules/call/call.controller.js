@@ -61,11 +61,20 @@ const endCall = asyncHandler(async (req, res) => {
 });
 
 const getCallSessions = asyncHandler(async (req, res) => {
+  const statusFilter = String(req.query.status || '')
+    .split(',')
+    .map((value) => String(value || '').trim().toUpperCase())
+    .filter(Boolean);
+  const groupByUser =
+    String(req.query.groupByUser || '').trim().toLowerCase() === 'true';
+
   const data = await callService.listCallSessions({
     userId: req.user.id,
     role: req.user.role,
     page: Number(req.query.page || 1),
     limit: Number(req.query.limit || 20),
+    statuses: statusFilter,
+    groupByUser,
   });
 
   return successResponse(res, data);

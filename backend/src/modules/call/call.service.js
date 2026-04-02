@@ -15,6 +15,15 @@ let io = null;
 let billingManager = null;
 
 const FINAL_CALL_STATES = new Set(['ENDED', 'CANCELLED', 'REJECTED', 'MISSED']);
+const LISTABLE_CALL_STATUSES = new Set([
+  'REQUESTED',
+  'RINGING',
+  'ACTIVE',
+  'ENDED',
+  'MISSED',
+  'REJECTED',
+  'CANCELLED',
+]);
 const VALID_CALL_TYPES = new Set(['audio', 'video']);
 
 const normalizeCallType = (value) => {
@@ -756,12 +765,27 @@ const getCallSession = async ({ actorId, sessionId }) => {
   };
 };
 
-const listCallSessions = async ({ userId, role, page = 1, limit = 20 }) => {
+const listCallSessions = async ({
+  userId,
+  role,
+  page = 1,
+  limit = 20,
+  statuses = [],
+  groupByUser = false,
+}) => {
   const skip = (page - 1) * limit;
+  const normalizedStatuses = (Array.isArray(statuses) ? statuses : [])
+    .map((status) => String(status || '').trim().toUpperCase())
+    .filter((status) => LISTABLE_CALL_STATUSES.has(status));
   const where = role === 'LISTENER' ? { listenerId: userId } : { userId };
+  if (normalizedStatuses.length) {
+    where.status = {
+      in: normalizedStatuses,
+    };
+  }
 
-  const [items, total] = await Promise.all([
-    prisma.callSession.findMany({
+  const fetchSessions = async ({ usePagination }) => {
+    const sessions = await prisma.callSession.findMany({
       where,
       include: {
         user: {
@@ -772,53 +796,135 @@ const listCallSessions = async ({ userId, role, page = 1, limit = 20 }) => {
         },
       },
       orderBy: { createdAt: 'desc' },
-      skip,
-      take: limit,
-    }),
-    prisma.callSession.count({ where }),
-  ]);
+      ...(usePagination ? { skip, take: limit } : {}),
+    });
 
-  const sessionIds = items.map((item) => item.id);
-  const requestEvents = sessionIds.length
-    ? await prisma.callEvent.findMany({
-        where: {
-          sessionId: { in: sessionIds },
-          eventType: 'call_request',
-        },
-        orderBy: {
-          createdAt: 'desc',
-        },
-        select: {
-          sessionId: true,
-          payload: true,
-        },
-      })
-    : [];
+    const sessionIds = sessions.map((item) => item.id);
+    const requestEvents = sessionIds.length
+      ? await prisma.callEvent.findMany({
+          where: {
+            sessionId: { in: sessionIds },
+            eventType: 'call_request',
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+          select: {
+            sessionId: true,
+            payload: true,
+          },
+        })
+      : [];
 
-  const callTypeBySessionId = new Map();
-  requestEvents.forEach((event) => {
-    if (!callTypeBySessionId.has(event.sessionId)) {
-      callTypeBySessionId.set(
-        event.sessionId,
-        normalizeCallType(event?.payload?.callType),
-      );
+    const callTypeBySessionId = new Map();
+    requestEvents.forEach((event) => {
+      if (!callTypeBySessionId.has(event.sessionId)) {
+        callTypeBySessionId.set(
+          event.sessionId,
+          normalizeCallType(event?.payload?.callType),
+        );
+      }
+    });
+
+    return sessions.map((item) => ({
+      ...item,
+      channelName: getCallChannelName(item.id),
+      callType: callTypeBySessionId.get(item.id) || 'audio',
+    }));
+  };
+
+  if (!groupByUser) {
+    const [items, total] = await Promise.all([
+      fetchSessions({ usePagination: true }),
+      prisma.callSession.count({ where }),
+    ]);
+
+    return {
+      items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  const allItems = await fetchSessions({ usePagination: false });
+  const groupedByCounterparty = new Map();
+  const isListenerRole = String(role || '').trim().toUpperCase() === 'LISTENER';
+
+  allItems.forEach((item) => {
+    const counterparty = isListenerRole ? item.user : item.listener;
+    const counterpartyId =
+      counterparty?.id || (isListenerRole ? item.userId : item.listenerId);
+    const groupKey = counterpartyId || `unknown:${item.id}`;
+    const startedAt =
+      item.startedAt || item.answeredAt || item.requestedAt || item.createdAt || null;
+    const startedAtTime = startedAt ? new Date(startedAt).getTime() : 0;
+
+    if (!groupedByCounterparty.has(groupKey)) {
+      groupedByCounterparty.set(groupKey, {
+        id: `group:${groupKey}`,
+        user: counterparty || null,
+        totalCalls: 0,
+        totalDuration: 0,
+        totalAmount: 0,
+        lastCall: null,
+        lastCallAt: 0,
+      });
+    }
+
+    const group = groupedByCounterparty.get(groupKey);
+    group.totalCalls += 1;
+    group.totalDuration += Number(item.durationSeconds || 0);
+    group.totalAmount += Number(item.totalAmount || 0);
+
+    if (!group.lastCall || startedAtTime >= group.lastCallAt) {
+      group.lastCall = item;
+      group.lastCallAt = startedAtTime;
+      group.user = counterparty || group.user;
     }
   });
 
-  const enriched = items.map((item) => ({
-    ...item,
-    channelName: getCallChannelName(item.id),
-    callType: callTypeBySessionId.get(item.id) || 'audio',
-  }));
+  const groupedItems = Array.from(groupedByCounterparty.values())
+    .map((group) => ({
+      id: group.id,
+      user: group.user,
+      totalCalls: group.totalCalls,
+      totalDuration: group.totalDuration,
+      totalAmount: group.totalAmount,
+      lastCall: group.lastCall,
+      status: group.lastCall?.status || null,
+      callType: group.lastCall?.callType || 'audio',
+      startedAt:
+        group.lastCall?.startedAt ||
+        group.lastCall?.answeredAt ||
+        group.lastCall?.requestedAt ||
+        group.lastCall?.createdAt ||
+        null,
+      requestedAt:
+        group.lastCall?.requestedAt || group.lastCall?.createdAt || null,
+      durationSeconds: group.lastCall?.durationSeconds || 0,
+      groupedByUser: true,
+    }))
+    .sort((left, right) => {
+      const leftTime = left?.startedAt ? new Date(left.startedAt).getTime() : 0;
+      const rightTime = right?.startedAt ? new Date(right.startedAt).getTime() : 0;
+      return rightTime - leftTime;
+    });
+
+  const pagedItems = groupedItems.slice(skip, skip + limit);
 
   return {
-    items: enriched,
+    items: pagedItems,
     pagination: {
       page,
       limit,
-      total,
-      totalPages: Math.ceil(total / limit),
+      total: groupedItems.length,
+      totalPages: Math.ceil(groupedItems.length / limit),
     },
+    groupedByUser: true,
   };
 };
 

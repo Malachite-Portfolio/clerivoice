@@ -199,20 +199,38 @@ export const getChatSessions = async ({ page = 1, limit = CHAT_SESSION_PAGE_SIZE
   return response.data.data;
 };
 
-export const getCallSessions = async ({ page = 1, limit = CALL_SESSION_PAGE_SIZE } = {}) => {
+export const getCallSessions = async ({
+  page = 1,
+  limit = CALL_SESSION_PAGE_SIZE,
+  status,
+  groupByUser = false,
+} = {}) => {
   if (isDemoSessionActive()) {
     return getDemoCallSessions({ page, limit });
   }
+
+  const normalizedStatuses = Array.isArray(status)
+    ? status.map((item) => String(item || '').trim().toUpperCase()).filter(Boolean)
+    : typeof status === 'string'
+      ? status
+          .split(',')
+          .map((item) => String(item || '').trim().toUpperCase())
+          .filter(Boolean)
+      : [];
 
   const response = await apiClient.get(API_ENDPOINTS.call.sessions, {
     params: {
       page,
       limit,
+      ...(normalizedStatuses.length ? { status: normalizedStatuses.join(',') } : {}),
+      ...(groupByUser ? { groupByUser: 'true' } : {}),
     },
   });
   logSessionApi('callSessionsFetched', {
     page,
     limit,
+    statuses: normalizedStatuses,
+    groupByUser: Boolean(groupByUser),
     count: response.data?.data?.items?.length || 0,
   });
   return response.data.data;

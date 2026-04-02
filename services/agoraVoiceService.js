@@ -297,6 +297,13 @@ export const joinAgoraVoiceChannel = async ({
           channelName,
           sessionId: sessionId || null,
         });
+        logAgoraVoice('publishExecution', {
+          channelName,
+          sessionId: sessionId || null,
+          publishMicrophoneTrack: true,
+          publishCameraTrack: normalizedCallType === 'video',
+          callType: normalizedCallType,
+        });
         ensureOngoingCallService({
           sessionId,
           subtitle:
@@ -375,6 +382,11 @@ export const joinAgoraVoiceChannel = async ({
     try {
       // Ensure local mic capture + remote playback are fully enabled for this call.
       engine.setDefaultAudioRouteToSpeakerphone(false);
+      logAgoraVoice('localMediaInitStart', {
+        channelName,
+        sessionId: sessionId || null,
+        callType: normalizedCallType,
+      });
 
       if (normalizedCallType === 'video') {
         engine.enableVideo();
@@ -406,15 +418,41 @@ export const joinAgoraVoiceChannel = async ({
       if (AUTH_DEBUG_ENABLED) {
         engine.enableAudioVolumeIndication(300, 3, true);
       }
+      logAgoraVoice('localMediaInitSuccess', {
+        channelName,
+        sessionId: sessionId || null,
+        callType: normalizedCallType,
+        videoTrackEnabled: normalizedCallType === 'video',
+      });
     } catch (_error) {
-      // Ignore audio toggles; join still proceeds.
+      logAgoraVoice('localMediaInitFailure', {
+        channelName,
+        sessionId: sessionId || null,
+        callType: normalizedCallType,
+        message: _error?.message || 'Unknown error',
+      });
+      // Ignore media init failures; join still proceeds and retries can re-assert state.
     }
 
+    const publishMicrophoneTrack = true;
+    const publishCameraTrack = normalizedCallType === 'video';
+    const autoSubscribeAudio = true;
+    const autoSubscribeVideo = normalizedCallType === 'video';
+    logAgoraVoice('publishTracksConfig', {
+      channelName,
+      sessionId: sessionId || null,
+      callType: normalizedCallType,
+      publishMicrophoneTrack,
+      publishCameraTrack,
+      autoSubscribeAudio,
+      autoSubscribeVideo,
+    });
+
     const joinResult = engine.joinChannel(token || '', channelName, Number(uid) || 0, {
-      publishMicrophoneTrack: true,
-      publishCameraTrack: normalizedCallType === 'video',
-      autoSubscribeAudio: true,
-      autoSubscribeVideo: normalizedCallType === 'video',
+      publishMicrophoneTrack,
+      publishCameraTrack,
+      autoSubscribeAudio,
+      autoSubscribeVideo,
       clientRoleType: ClientRoleType.ClientRoleBroadcaster,
     });
 
@@ -603,6 +641,7 @@ export const setLocalVideoEnabled = (enabled, options = {}) => {
     enabled: nextEnabled,
     reason: options?.reason || 'toggle_local_camera',
     callType: currentCallType,
+    videoTrackEnabled: nextEnabled,
   });
 };
 

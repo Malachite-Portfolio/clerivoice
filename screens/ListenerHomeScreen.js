@@ -285,23 +285,28 @@ const ListenerHomeScreen = ({ navigation }) => {
   };
 
   const openCallItem = (item) => {
-    if (!['ACTIVE', 'RINGING'].includes(String(item?.status || '').toUpperCase())) {
+    const sessionRecord = item?.lastCall || item;
+    const normalizedStatus = String(sessionRecord?.status || '').toUpperCase();
+    const totalCalls = Number(item?.totalCalls || 1);
+    const totalDuration = Number(item?.totalDuration || sessionRecord?.durationSeconds || 0);
+
+    if (!['ACTIVE', 'RINGING'].includes(normalizedStatus)) {
       Alert.alert(
         'Call history',
-        `${item?.user?.displayName || 'User'} - ${String(item?.status || 'ENDED').toUpperCase()}`,
+        `${item?.user?.displayName || sessionRecord?.user?.displayName || 'User'} - ${normalizedStatus || 'ENDED'}\n${totalCalls} call${totalCalls > 1 ? 's' : ''} • ${formatDuration(totalDuration)}`,
       );
       return;
     }
 
     navigation.navigate('CallSession', {
       callPayload: {
-        session: item,
+        session: sessionRecord,
         agora: null,
       },
       host: {
-        name: item?.user?.displayName || 'User',
-        avatar: item?.user?.profileImageUrl || null,
-        userId: item?.user?.id || item?.userId || null,
+        name: item?.user?.displayName || sessionRecord?.user?.displayName || 'User',
+        avatar: item?.user?.profileImageUrl || sessionRecord?.user?.profileImageUrl || null,
+        userId: item?.user?.id || sessionRecord?.user?.id || sessionRecord?.userId || null,
       },
     });
   };
@@ -488,7 +493,8 @@ const ListenerHomeScreen = ({ navigation }) => {
               <Text style={styles.historyName}>{item?.user?.displayName || 'Anonymous User'}</Text>
               <Text style={styles.historyMeta}>
                 {String(item?.status || '').toUpperCase()} •{' '}
-                {item?.durationSeconds ? formatDuration(item.durationSeconds) : '00:00'}
+                {formatDuration(item?.totalDuration || item?.durationSeconds || 0)} •{' '}
+                {Number(item?.totalCalls || 1)} call{Number(item?.totalCalls || 1) > 1 ? 's' : ''}
               </Text>
             </View>
             <View style={styles.trailingColumn}>

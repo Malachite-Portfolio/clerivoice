@@ -12,6 +12,7 @@ import RealtimeRuntimeManager from '../components/RealtimeRuntimeManager';
 import colors from '../constants/colors';
 import { AuthProvider } from '../context/AuthContext';
 import { AppVariantProvider } from '../context/AppVariantContext';
+import { CallSessionProvider } from '../context/CallSessionContext';
 import { WalletFlowProvider } from '../context/WalletFlowContext';
 import { queryClient } from '../services/queryClient';
 
@@ -45,15 +46,17 @@ const AppShell = ({ NavigatorComponent, validateStoredSession, variantConfig }) 
       <AppVariantProvider value={variantConfig}>
         <AuthProvider validateStoredSession={validateStoredSession}>
           <WalletFlowProvider>
-            <NavigationContainer
-              ref={navigationRef}
-              theme={navigationTheme}
-              onReady={flushPendingNavigationReset}
-            >
-              <StatusBar style="light" />
-              <RealtimeRuntimeManager />
-              <NavigatorComponent />
-            </NavigationContainer>
+            <CallSessionProvider>
+              <NavigationContainer
+                ref={navigationRef}
+                theme={navigationTheme}
+                onReady={flushPendingNavigationReset}
+              >
+                <StatusBar style="light" />
+                <RealtimeRuntimeManager />
+                <NavigatorComponent />
+              </NavigationContainer>
+            </CallSessionProvider>
           </WalletFlowProvider>
         </AuthProvider>
       </AppVariantProvider>

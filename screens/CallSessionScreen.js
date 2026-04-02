@@ -11,6 +11,7 @@ import {
 import theme from '../constants/theme';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
+import { useCallSession } from '../context/CallSessionContext';
 import { resetToAuthEntry } from '../navigation/navigationRef';
 import { isUnauthorizedApiError } from '../services/apiClient';
 import { endDemoCallSession } from '../services/demoMode';
@@ -64,9 +65,10 @@ const logCallDebug = (label, payload) => {
 
 const CallSessionScreen = ({ navigation, route }) => {
   const { session: authSession } = useAuth();
+  const { setActiveCallFromParams, clearActiveCall } = useCallSession();
   const [runtimePayload, setRuntimePayload] = useState(route?.params?.callPayload || null);
   const incomingRequest = route?.params?.incomingRequest || null;
-  const host = route?.params?.host || {};
+  const host = useMemo(() => route?.params?.host || {}, [route?.params?.host]);
   const payload = runtimePayload;
   const sessionId = payload?.session?.id || incomingRequest?.sessionId;
   const resolvedCallType = useMemo(
@@ -89,7 +91,15 @@ const CallSessionScreen = ({ navigation, route }) => {
   const isVideoCall = resolvedCallType === 'video';
   const isListener = authSession?.user?.role === 'LISTENER';
   const isDemoSession = Boolean(authSession?.isDemoUser || payload?.demoMode || incomingRequest?.demoMode);
-  const [statusText, setStatusText] = useState(incomingRequest && !payload ? 'Incoming Call' : payload?.session?.status === 'ACTIVE' ? 'Connecting...' : 'Ringing...');
+  const [statusText, setStatusText] = useState(
+    incomingRequest && !payload
+      ? isVideoCall
+        ? 'Incoming video call'
+        : 'Incoming call'
+      : payload?.session?.status === 'ACTIVE'
+        ? 'Connecting...'
+        : 'Calling...',
+  );
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
@@ -97,7 +107,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   const [remoteVideoUid, setRemoteVideoUid] = useState(null);
   const [hasLocalVideoFrame, setHasLocalVideoFrame] = useState(false);
   const [hasRemoteVideoFrame, setHasRemoteVideoFrame] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
+  const [isCallConnected, setIsCallConnected] = useState(false);
   const [lowBalanceWarning, setLowBalanceWarning] = useState('');
   const intervalRef = useRef(null);
   const demoConnectTimeoutRef = useRef(null);
@@ -114,24 +124,71 @@ const CallSessionScreen = ({ navigation, route }) => {
   const callSyncTimeoutRef = useRef(null);
   const callSyncInFlightRef = useRef(false);
   const appStateRef = useRef(AppState.currentState || 'active');
+  const localVideoBootstrapTimeoutRef = useRef(null);
   const [isResolvingIncoming, setIsResolvingIncoming] = useState(false);
   const callTypeRef = useRef(resolvedCallType);
 
   const displayName = useMemo(() => host?.name || incomingRequest?.requester?.displayName || 'Support Host', [host?.name, incomingRequest?.requester?.displayName]);
   const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
-  const callMode = incomingRequest && !runtimePayload ? 'incoming' : isConnected ? 'active' : 'outgoing';
+  const callMode =
+    incomingRequest && !runtimePayload ? 'incoming' : isCallConnected ? 'active' : 'outgoing';
   const showVideoSurfaces = isVideoCall && callMode !== 'incoming' && !isDemoSession;
 
-  const clearTimer = useCallback(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = null;
-  }, []);
+  const clearTimer = useCallback(
+    ({ reset = false, reason = 'unknown' } = {}) => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+      intervalRef.current = null;
+      if (reset) {
+        setElapsedSeconds(0);
+      }
+      logCallDebug(reset ? 'timerReset' : 'timerStopped', {
+        sessionId,
+        reason,
+        reset,
+      });
+    },
+    [sessionId],
+  );
 
-  const startTimer = useCallback((initialSeconds = 0) => {
-    clearTimer();
-    setElapsedSeconds(initialSeconds);
-    intervalRef.current = setInterval(() => setElapsedSeconds((prev) => prev + 1), 1000);
-  }, [clearTimer]);
+  const startTimer = useCallback(
+    (initialSeconds = 0, reason = 'unknown') => {
+      clearTimer({
+        reason: `${reason}_restart`,
+      });
+      setElapsedSeconds(initialSeconds);
+      intervalRef.current = setInterval(() => setElapsedSeconds((prev) => prev + 1), 1000);
+      logCallDebug('timerStarted', {
+        sessionId,
+        initialSeconds,
+        reason,
+      });
+    },
+    [clearTimer, sessionId],
+  );
+
+  const setCallConnectedState = useCallback(
+    (connected, reason = 'unknown') => {
+      const nextConnected = Boolean(connected);
+      callConnectedRef.current = nextConnected;
+      setIsCallConnected((prev) => {
+        if (prev === nextConnected) {
+          return prev;
+        }
+
+        logCallDebug('callConnectionStateChanged', {
+          sessionId,
+          previous: prev,
+          next: nextConnected,
+          reason,
+        });
+
+        return nextConnected;
+      });
+    },
+    [sessionId],
+  );
 
   useEffect(() => {
     runtimePayloadRef.current = runtimePayload;
@@ -166,20 +223,82 @@ const CallSessionScreen = ({ navigation, route }) => {
     }
   }, [incomingRequest, isVideoCall, runtimePayload]);
 
+  useEffect(() => {
+    if (!sessionId) {
+      return;
+    }
+
+    const params = runtimePayload
+      ? {
+          callPayload: runtimePayload,
+          host,
+        }
+      : incomingRequest
+        ? {
+            incomingRequest,
+            host,
+          }
+        : null;
+
+    if (!params) {
+      return;
+    }
+
+    setActiveCallFromParams(params, 'call_screen_state_sync');
+  }, [
+    host,
+    incomingRequest,
+    runtimePayload,
+    sessionId,
+    setActiveCallFromParams,
+  ]);
+
   const activateConnectedState = useCallback((startedAt) => {
     if (callSyncTimeoutRef.current) {
       clearTimeout(callSyncTimeoutRef.current);
       callSyncTimeoutRef.current = null;
     }
     const resolvedStartedAt = startedAt || callStartedAtRef.current;
-    setIsConnected(true);
+    setCallConnectedState(true, 'activate_connected_state');
     setStatusText('Connected');
     startTimer(
       resolvedStartedAt
         ? Math.max(0, Math.floor((Date.now() - new Date(resolvedStartedAt).getTime()) / 1000))
         : 0,
+      'call_connected',
     );
-  }, [startTimer]);
+  }, [setCallConnectedState, startTimer]);
+
+  const requestLocalVideoBootstrap = useCallback((reason = 'unknown', callType = callTypeRef.current) => {
+    if (isDemoSession || normalizeCallType(callType) !== 'video') {
+      return;
+    }
+
+    const runEnable = (source) => {
+      logCallDebug('videoTrackEnableRequested', {
+        sessionId,
+        source,
+        reason,
+        hasJoined: hasJoinedAgoraRef.current,
+        cameraEnabled: isCameraEnabled,
+      });
+      setLocalVideoEnabled(true, {
+        reason: `${reason}_${source}`,
+      });
+    };
+
+    requestAnimationFrame(() => {
+      runEnable('animation_frame');
+    });
+
+    if (localVideoBootstrapTimeoutRef.current) {
+      clearTimeout(localVideoBootstrapTimeoutRef.current);
+    }
+    localVideoBootstrapTimeoutRef.current = setTimeout(() => {
+      runEnable('timeout_fallback');
+      localVideoBootstrapTimeoutRef.current = null;
+    }, 250);
+  }, [isCameraEnabled, isDemoSession, sessionId]);
 
   const cleanupAgoraSession = useCallback(async (reason = 'unknown') => {
     if (isDemoSession) {
@@ -201,12 +320,16 @@ const CallSessionScreen = ({ navigation, route }) => {
     destroyAgoraVoiceEngine();
     hasJoinedAgoraRef.current = false;
     joiningAgoraRef.current = false;
-    callConnectedRef.current = false;
+    setCallConnectedState(false, `cleanup_${reason}`);
+    if (localVideoBootstrapTimeoutRef.current) {
+      clearTimeout(localVideoBootstrapTimeoutRef.current);
+      localVideoBootstrapTimeoutRef.current = null;
+    }
     setHasLocalVideoFrame(false);
     setHasRemoteVideoFrame(false);
     setRemoteVideoUid(null);
     setIsCameraEnabled(isVideoCall);
-  }, [isDemoSession, isVideoCall, sessionId]);
+  }, [isDemoSession, isVideoCall, sessionId, setCallConnectedState]);
 
   const stopIncomingCallRingtone = useCallback((reason = 'unknown') => {
     if (!sessionId) {
@@ -254,11 +377,12 @@ const CallSessionScreen = ({ navigation, route }) => {
     }
     if (isDemoSession) {
       hasJoinedAgoraRef.current = true;
-      setIsConnected(true);
+      setCallConnectedState(true, 'demo_join');
       setStatusText('Connected');
       const startedAt = runtimePayloadRef.current?.session?.startedAt || runtimePayloadRef.current?.session?.answeredAt || new Date();
       startTimer(
         Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)),
+        'demo_join',
       );
       return;
     }
@@ -267,7 +391,9 @@ const CallSessionScreen = ({ navigation, route }) => {
     joinAttemptCountRef.current += 1;
     const activePayload = runtimePayloadRef.current;
     const activeCallType = normalizeCallType(
-      callTypeRef.current || activePayload?.session?.callType,
+      activePayload?.session?.callType ||
+        activePayload?.realtime?.callType ||
+        callTypeRef.current,
     );
 
     try {
@@ -275,8 +401,19 @@ const CallSessionScreen = ({ navigation, route }) => {
       setRemoteVideoUid(null);
       if (activeCallType === 'video') {
         setHasLocalVideoFrame(false);
+        setIsCameraEnabled(true);
+        logCallDebug('rendererPrimedForLocalVideo', {
+          sessionId,
+          callType: activeCallType,
+          hasJoined: hasJoinedAgoraRef.current,
+        });
       }
 
+      logCallDebug('localMediaInitStart', {
+        sessionId,
+        callType: activeCallType,
+        source: 'joinAgoraIfNeeded',
+      });
       const permissionResult =
         activeCallType === 'video'
           ? await requestVideoCallPermissions()
@@ -294,12 +431,22 @@ const CallSessionScreen = ({ navigation, route }) => {
       );
 
       if (!permissionResult?.granted) {
+        logCallDebug('localMediaInitFailure', {
+          sessionId,
+          callType: activeCallType,
+          source: 'joinAgoraIfNeeded_permission_denied',
+        });
         throw new Error(
           activeCallType === 'video'
             ? 'Camera and microphone permission is required to join this video call.'
             : 'Microphone permission is required to join the call.',
         );
       }
+      logCallDebug('localMediaInitSuccess', {
+        sessionId,
+        callType: activeCallType,
+        source: 'joinAgoraIfNeeded_permissions_granted',
+      });
 
       if (!latestAgoraRef.current?.appId || !latestAgoraRef.current?.token) {
         const refreshedRtc = await refreshCallToken(sessionId);
@@ -343,10 +490,12 @@ const CallSessionScreen = ({ navigation, route }) => {
           });
           if (activeCallType === 'video') {
             setIsCameraEnabled(true);
+            requestLocalVideoBootstrap('join_success_auto_enable', activeCallType);
             logCallDebug('videoEnabled', {
               sessionId,
               callType: activeCallType,
               enabled: true,
+              source: 'join_success',
             });
           } else {
             setIsCameraEnabled(false);
@@ -371,6 +520,13 @@ const CallSessionScreen = ({ navigation, route }) => {
             sessionId,
             remoteUid,
           });
+          if (!isCallConnected) {
+            logCallDebug('callConnectedByRemoteJoin', {
+              sessionId,
+              remoteUid,
+            });
+            activateConnectedState(callStartedAtRef.current || new Date().toISOString());
+          }
         },
         onUserOffline: (remoteUid) => {
           setRemoteVideoUid(null);
@@ -382,11 +538,26 @@ const CallSessionScreen = ({ navigation, route }) => {
           setStatusText('Call ended');
         },
         onConnectionStateChanged: ({ state, reason }) => {
+          const numericState = Number(state);
+          const normalizedState = String(state || '').trim().toLowerCase();
+          const rtcConnected =
+            numericState === 3 ||
+            normalizedState === 'connected' ||
+            normalizedState === 'connectionstateconnected';
           logCallDebug('agoraConnectionStateChanged', {
             sessionId,
             state,
             reason,
+            rtcConnected,
           });
+          if (rtcConnected && !isCallConnected) {
+            logCallDebug('callConnectedByRtcState', {
+              sessionId,
+              state,
+              reason,
+            });
+            activateConnectedState(callStartedAtRef.current || new Date().toISOString());
+          }
         },
         onLocalAudioStateChanged: ({ state, reason }) => {
           logCallDebug('localAudioStateChanged', {
@@ -409,6 +580,11 @@ const CallSessionScreen = ({ navigation, route }) => {
           }
 
           setHasLocalVideoFrame(true);
+          logCallDebug('localStreamSet', {
+            sessionId,
+            callType: activeCallType,
+            hasLocalVideoFrame: true,
+          });
           logCallDebug('localPreviewStarted', {
             sessionId,
             width,
@@ -494,6 +670,12 @@ const CallSessionScreen = ({ navigation, route }) => {
       }
     } catch (error) {
       hasJoinedAgoraRef.current = false;
+      logCallDebug('localMediaInitFailure', {
+        sessionId,
+        callType: activeCallType,
+        source: 'joinAgoraIfNeeded_failure',
+        message: error?.message || 'Unknown error',
+      });
       logCallDebug('joinFailure', {
         sessionId,
         message: error?.message || 'Unknown error',
@@ -507,8 +689,11 @@ const CallSessionScreen = ({ navigation, route }) => {
   }, [
     activateConnectedState,
     cleanupAgoraSession,
+    isCallConnected,
     isDemoSession,
+    requestLocalVideoBootstrap,
     sessionId,
+    setCallConnectedState,
     startTimer,
   ]);
 
@@ -552,15 +737,28 @@ const CallSessionScreen = ({ navigation, route }) => {
       stopIncomingCallRingtone('call_ended');
     }
 
-    clearTimer();
+    setCallConnectedState(false, 'session_ended_event');
+    clearTimer({
+      reset: true,
+      reason: 'session_ended_event',
+    });
     cleanupAgoraSession('session_ended').catch(() => {});
+    clearActiveCall('session_ended_event', sessionId);
     setStatusText('Call ended');
     if (eventPayload?.reasonCode === 'LOW_BALANCE') {
       Alert.alert('Insufficient Balance', 'You do not have sufficient balance. Please recharge your wallet to continue.', [{ text: 'OK', onPress: () => navigation.goBack() }]);
     } else {
       navigation.goBack();
     }
-  }, [cleanupAgoraSession, clearTimer, navigation, sessionId, stopIncomingCallRingtone]);
+  }, [
+    cleanupAgoraSession,
+    clearActiveCall,
+    clearTimer,
+    navigation,
+    sessionId,
+    setCallConnectedState,
+    stopIncomingCallRingtone,
+  ]);
 
   useEffect(() => {
     if (isDemoSession) {
@@ -599,12 +797,49 @@ const CallSessionScreen = ({ navigation, route }) => {
       if (callActive && callStartedAtRef.current) {
         activateConnectedState(callStartedAtRef.current);
       }
+
+      if (
+        callConnectedRef.current &&
+        !hasJoinedAgoraRef.current &&
+        !joiningAgoraRef.current
+      ) {
+        logCallDebug('restoreMediaJoinStart', {
+          sessionId,
+          source: 'app_resume',
+          callType: callTypeRef.current,
+        });
+        joinAgoraIfNeeded().catch((error) => {
+          logCallDebug('restoreMediaJoinFailure', {
+            sessionId,
+            source: 'app_resume',
+            message: error?.message || 'Unknown error',
+          });
+        });
+      }
+
+      if (
+        isVideoCall &&
+        hasJoinedAgoraRef.current &&
+        isCameraEnabled &&
+        !hasLocalVideoFrame
+      ) {
+        requestLocalVideoBootstrap('app_resume_reassert', callTypeRef.current);
+      }
     });
 
     return () => {
       subscription.remove();
     };
-  }, [activateConnectedState, isDemoSession, sessionId]);
+  }, [
+    activateConnectedState,
+    hasLocalVideoFrame,
+    isCameraEnabled,
+    isDemoSession,
+    isVideoCall,
+    joinAgoraIfNeeded,
+    requestLocalVideoBootstrap,
+    sessionId,
+  ]);
 
   const reconcileCallerCallState = useCallback(async (reason = 'poll') => {
     if (
@@ -666,8 +901,13 @@ const CallSessionScreen = ({ navigation, route }) => {
           isRejectedCall ? 'Call rejected' : 'This call is no longer active.',
         );
         sessionEndedRef.current = true;
-        clearTimer();
+        setCallConnectedState(false, 'call_sync_terminal_state');
+        clearTimer({
+          reset: true,
+          reason: 'call_sync_terminal_state',
+        });
         await cleanupAgoraSession().catch(() => {});
+        clearActiveCall('call_sync_terminal_state', sessionId);
         setStatusText(isRejectedCall ? 'Call rejected' : 'Call ended');
         Alert.alert(
           isRejectedCall ? 'Call rejected' : 'Call ended',
@@ -718,6 +958,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     activateConnectedState,
     authSession?.accessToken,
     cleanupAgoraSession,
+    clearActiveCall,
     clearTimer,
     incomingRequest,
     isDemoSession,
@@ -725,6 +966,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     joinAgoraIfNeeded,
     navigation,
     sessionId,
+    setCallConnectedState,
     syncRuntimePayloadFromSession,
   ]);
 
@@ -749,15 +991,20 @@ const CallSessionScreen = ({ navigation, route }) => {
       } else {
         setStatusText('Connecting...');
         demoConnectTimeoutRef.current = setTimeout(() => {
-          setIsConnected(true);
+          setCallConnectedState(true, 'demo_connect_timeout');
           setStatusText('Connected');
-          startTimer(payload?.session?.startedAt ? Math.max(0, Math.floor((Date.now() - new Date(payload.session.startedAt).getTime()) / 1000)) : 0);
+          startTimer(
+            payload?.session?.startedAt
+              ? Math.max(0, Math.floor((Date.now() - new Date(payload.session.startedAt).getTime()) / 1000))
+              : 0,
+            'demo_connect_timeout',
+          );
         }, 900);
       }
 
       return () => {
         if (demoConnectTimeoutRef.current) clearTimeout(demoConnectTimeoutRef.current);
-        clearTimer();
+        clearTimer({ reason: 'demo_screen_cleanup' });
       };
     }
 
@@ -775,6 +1022,12 @@ const CallSessionScreen = ({ navigation, route }) => {
 
     const onCallAccepted = async (eventPayload) => {
       if (eventPayload?.sessionId !== sessionId) return;
+      const acceptedCallType = normalizeCallType(eventPayload?.callType || callTypeRef.current);
+      callTypeRef.current = acceptedCallType;
+      if (acceptedCallType === 'video') {
+        setIsCameraEnabled(true);
+        setHasLocalVideoFrame(false);
+      }
       if (eventPayload?.callType) {
         setRuntimePayload((prev) =>
           prev
@@ -794,7 +1047,7 @@ const CallSessionScreen = ({ navigation, route }) => {
         callType: eventPayload?.callType || callTypeRef.current,
       });
       setStatusText(
-        normalizeCallType(eventPayload?.callType || callTypeRef.current) === 'video'
+        acceptedCallType === 'video'
           ? 'Connecting video...'
           : 'Connecting...',
       );
@@ -852,8 +1105,13 @@ const CallSessionScreen = ({ navigation, route }) => {
         reason: reasonMessage,
       });
       stopIncomingCallRingtone('call_rejected');
-      clearTimer();
+      setCallConnectedState(false, 'call_rejected_event');
+      clearTimer({
+        reset: true,
+        reason: 'call_rejected_event',
+      });
       cleanupAgoraSession('call_rejected').catch(() => {});
+      clearActiveCall('call_rejected_event', sessionId);
       setStatusText('Call rejected');
       Alert.alert('Call rejected', reasonMessage, [
         {
@@ -886,7 +1144,9 @@ const CallSessionScreen = ({ navigation, route }) => {
       socket.off('call_low_balance_warning', onLowBalance);
       socket.off('call_end_due_to_low_balance', handleSessionEnded);
       socket.off('call_ended', handleSessionEnded);
-      clearTimer();
+      clearTimer({
+        reason: 'screen_effect_cleanup',
+      });
       const agoraState = getAgoraVoiceSessionState();
       const keepCallAlive =
         !sessionEndedRef.current &&
@@ -913,7 +1173,59 @@ const CallSessionScreen = ({ navigation, route }) => {
         cleanupAgoraSession('screen_unmount').catch(() => {});
       }
     };
-  }, [activateConnectedState, authSession?.accessToken, cleanupAgoraSession, clearTimer, handleSessionEnded, incomingRequest, isDemoSession, isListener, joinAgoraIfNeeded, navigation, sessionId, startTimer, stopIncomingCallRingtone]);
+  }, [
+    activateConnectedState,
+    authSession?.accessToken,
+    cleanupAgoraSession,
+    clearActiveCall,
+    clearTimer,
+    handleSessionEnded,
+    incomingRequest,
+    isDemoSession,
+    isListener,
+    joinAgoraIfNeeded,
+    navigation,
+    sessionId,
+    setCallConnectedState,
+    startTimer,
+    stopIncomingCallRingtone,
+  ]);
+
+  useEffect(() => {
+    if (!isVideoCall || isDemoSession) {
+      return;
+    }
+
+    logCallDebug('rendererMountState', {
+      sessionId,
+      showVideoSurfaces,
+      hasJoined: hasJoinedAgoraRef.current,
+      joining: joiningAgoraRef.current,
+      cameraEnabled: isCameraEnabled,
+      hasLocalVideoFrame,
+      localStreamState: hasLocalVideoFrame ? 'present' : 'absent',
+    });
+
+    if (
+      !showVideoSurfaces ||
+      !isCameraEnabled ||
+      hasLocalVideoFrame ||
+      !hasJoinedAgoraRef.current ||
+      joiningAgoraRef.current
+    ) {
+      return;
+    }
+
+    requestLocalVideoBootstrap('renderer_mount_reassert', callTypeRef.current);
+  }, [
+    hasLocalVideoFrame,
+    isCameraEnabled,
+    isDemoSession,
+    isVideoCall,
+    requestLocalVideoBootstrap,
+    sessionId,
+    showVideoSurfaces,
+  ]);
 
   useEffect(() => {
     if (isDemoSession || !isListener || callMode !== 'incoming' || !sessionId) {
@@ -1066,7 +1378,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     logCallDebug('callScreenMinimized', {
       sessionId,
       callMode,
-      isConnected,
+      isCallConnected,
       hasJoined: hasJoinedAgoraRef.current,
       joining: joiningAgoraRef.current,
     });
@@ -1083,7 +1395,7 @@ const CallSessionScreen = ({ navigation, route }) => {
 
     navigation.navigate('MainDrawer');
     return true;
-  }, [callMode, isConnected, isListener, navigation, sessionId]);
+  }, [callMode, isCallConnected, isListener, navigation, sessionId]);
 
   useEffect(() => {
     const onHardwareBackPress = () => {
@@ -1119,6 +1431,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     if (isDemoSession) {
       resolvingIncomingRef.current = false;
       setIsResolvingIncoming(false);
+      clearActiveCall('incoming_rejected_demo', sessionId);
       navigation.goBack();
       return;
     }
@@ -1136,6 +1449,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     } finally {
       resolvingIncomingRef.current = false;
       setIsResolvingIncoming(false);
+      clearActiveCall('incoming_rejected', sessionId);
       navigation.goBack();
     }
   };
@@ -1182,6 +1496,16 @@ const CallSessionScreen = ({ navigation, route }) => {
       });
 
       const activeCallType = normalizeCallType(callTypeRef.current);
+      callTypeRef.current = activeCallType;
+      if (activeCallType === 'video') {
+        setIsCameraEnabled(true);
+        setHasLocalVideoFrame(false);
+      }
+      logCallDebug('localMediaInitStart', {
+        sessionId,
+        callType: activeCallType,
+        source: 'acceptIncoming',
+      });
       const permissionResult =
         activeCallType === 'video'
           ? await requestVideoCallPermissions()
@@ -1200,8 +1524,11 @@ const CallSessionScreen = ({ navigation, route }) => {
       );
 
       if (!permissionResult?.granted) {
-        resolvingIncomingRef.current = false;
-        setIsResolvingIncoming(false);
+        logCallDebug('localMediaInitFailure', {
+          sessionId,
+          callType: activeCallType,
+          source: 'acceptIncoming_permission_denied',
+        });
         startIncomingRingtone({
           sessionId,
           source: 'accept_permission_denied_resume',
@@ -1216,6 +1543,11 @@ const CallSessionScreen = ({ navigation, route }) => {
         );
         return;
       }
+      logCallDebug('localMediaInitSuccess', {
+        sessionId,
+        callType: activeCallType,
+        source: 'acceptIncoming_permissions_granted',
+      });
 
       let socket = getRealtimeSocket();
       if (!socket) {
@@ -1239,10 +1571,18 @@ const CallSessionScreen = ({ navigation, route }) => {
       latestAgoraRef.current = nextPayload?.agora || null;
       runtimePayloadRef.current = nextPayload;
       setRuntimePayload(nextPayload);
+      const nextCallType = normalizeCallType(
+        nextPayload?.session?.callType ||
+          nextPayload?.realtime?.callType ||
+          activeCallType,
+      );
+      callTypeRef.current = nextCallType;
+      setIsCameraEnabled(nextCallType === 'video');
+      if (nextCallType === 'video') {
+        setHasLocalVideoFrame(false);
+      }
       setStatusText(
-        normalizeCallType(
-          nextPayload?.session?.callType || nextPayload?.realtime?.callType || callTypeRef.current,
-        ) === 'video'
+        nextCallType === 'video'
           ? 'Connecting video...'
           : 'Connecting...',
       );
@@ -1251,8 +1591,6 @@ const CallSessionScreen = ({ navigation, route }) => {
       });
       await joinAgoraIfNeeded();
     } catch (error) {
-      resolvingIncomingRef.current = false;
-      setIsResolvingIncoming(false);
       startIncomingRingtone({
         sessionId,
         source: 'accept_failure_resume',
@@ -1262,14 +1600,23 @@ const CallSessionScreen = ({ navigation, route }) => {
         message: error?.response?.data?.message || error?.message || 'Unknown error',
       });
       if (!isUnauthorizedApiError(error)) Alert.alert('Unable to accept call', error?.response?.data?.message || error?.message || 'Unable to accept this call right now.');
+      clearActiveCall('accept_failure', sessionId);
       navigation.goBack();
+    } finally {
+      resolvingIncomingRef.current = false;
+      setIsResolvingIncoming(false);
     }
   };
 
   const onEndCall = async () => {
     if (isDemoSession) {
-      clearTimer();
+      setCallConnectedState(false, 'manual_end_demo');
+      clearTimer({
+        reset: true,
+        reason: 'manual_end_demo',
+      });
       await endDemoCallSession(sessionId, isListener ? 'LISTENER_ENDED' : 'USER_ENDED');
+      clearActiveCall('manual_end_demo', sessionId);
       navigation.goBack();
       return;
     }
@@ -1288,8 +1635,13 @@ const CallSessionScreen = ({ navigation, route }) => {
       }
     } catch (_error) {
     } finally {
-      clearTimer();
+      setCallConnectedState(false, 'manual_end_call');
+      clearTimer({
+        reset: true,
+        reason: 'manual_end_call',
+      });
       await cleanupAgoraSession('manual_end_call').catch(() => {});
+      clearActiveCall('manual_end_call', sessionId);
       navigation.goBack();
     }
   };
@@ -1352,7 +1704,7 @@ const CallSessionScreen = ({ navigation, route }) => {
           <View style={[styles.callInfoWrap, showVideoSurfaces ? styles.callInfoWrapVideo : null]}>
             <Text style={styles.name}>{displayName}</Text>
             <Text style={styles.statusText}>{statusText}</Text>
-            <Text style={styles.timerText}>{fmt(elapsedSeconds)}</Text>
+            {isCallConnected ? <Text style={styles.timerText}>{fmt(elapsedSeconds)}</Text> : null}
             {lowBalanceWarning ? <View style={styles.warning}><Ionicons name="alert-circle" size={16} color={theme.colors.warning} /><Text style={styles.warningText}>{lowBalanceWarning}</Text></View> : null}
           </View>
         </View>
