@@ -91,6 +91,10 @@ const ListenerHomeScreen = ({ navigation }) => {
   const [activeTab, setActiveTab] = useState('Dashboard');
 
   const listenerName = session?.user?.displayName || 'Listener';
+  const listenerAvatarSource = useMemo(
+    () => imageSource(session?.user?.profileImageUrl),
+    [session?.user?.profileImageUrl],
+  );
 
   const dashboardQuery = useQuery({
     queryKey: queryKeys.listener.dashboard,
@@ -180,6 +184,23 @@ const ListenerHomeScreen = ({ navigation }) => {
     const onCallResolved = (payload) => {
       invalidateLiveData();
     };
+    const onListenerStatusChanged = (payload) => {
+      if (String(payload?.listenerId || '') !== String(session?.user?.id || '')) {
+        return;
+      }
+      const nextAvailability = String(payload?.status || payload?.availability || '')
+        .trim()
+        .toUpperCase();
+      if (!nextAvailability) {
+        return;
+      }
+      setAvailability(nextAvailability);
+      logListenerDebug('presenceUpdate', {
+        listenerId: payload?.listenerId || null,
+        status: nextAvailability,
+        source: 'socket_listener_status_changed',
+      });
+    };
 
     socket.on('chat_started', invalidateLiveData);
     socket.on('chat_message', invalidateLiveData);
@@ -189,6 +210,8 @@ const ListenerHomeScreen = ({ navigation }) => {
     socket.on('call_ended', onCallResolved);
     socket.on('session_ended', onCallResolved);
     socket.on('wallet_updated', invalidateLiveData);
+    socket.on('listener_status_changed', onListenerStatusChanged);
+    socket.on('host_status_changed', onListenerStatusChanged);
 
     return () => {
       socket.off('chat_started', invalidateLiveData);
@@ -199,9 +222,11 @@ const ListenerHomeScreen = ({ navigation }) => {
       socket.off('call_ended', onCallResolved);
       socket.off('session_ended', onCallResolved);
       socket.off('wallet_updated', invalidateLiveData);
+      socket.off('listener_status_changed', onListenerStatusChanged);
+      socket.off('host_status_changed', onListenerStatusChanged);
       unsubscribeSocketState();
     };
-  }, [refreshAll, session?.accessToken]);
+  }, [refreshAll, session?.accessToken, session?.user?.id]);
 
   const chatItems = useMemo(
     () => (chatsQuery.data || []).filter((item) => item?.type === 'chat'),
@@ -580,9 +605,23 @@ const ListenerHomeScreen = ({ navigation }) => {
         >
           <View style={styles.header}>
             <Text style={styles.headerTitle}>Listener Dashboard</Text>
-            <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.85}>
-              <Ionicons name="log-out-outline" size={18} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
+            <View style={styles.headerActions}>
+              <TouchableOpacity
+                style={styles.profileAvatarBtn}
+                onPress={() => {
+                  logListenerDebug('profileOpen', {
+                    source: 'listener_header',
+                  });
+                  navigation.navigate('Profile');
+                }}
+                activeOpacity={0.85}
+              >
+                <Image source={listenerAvatarSource} style={styles.profileAvatarImg} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.85}>
+                <Ionicons name="log-out-outline" size={18} color={theme.colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={styles.welcomeCard}>
@@ -626,6 +665,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  profileAvatarBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: theme.colors.borderPink,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+  },
+  profileAvatarImg: {
+    width: '100%',
+    height: '100%',
   },
   headerTitle: {
     color: theme.colors.textPrimary,

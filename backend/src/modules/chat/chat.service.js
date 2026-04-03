@@ -262,7 +262,7 @@ const acceptChat = async ({ listenerId, sessionId }) => {
   });
 
   if (billingManager) {
-    billingManager.startChatBilling(sessionId);
+    billingManager.startChatBilling(sessionId, { runImmediately: true });
   }
 
   const channelName = getChatChannelName(sessionId);
@@ -577,38 +577,68 @@ const sendMessage = async ({ sessionId, senderId, receiverId, messageType = 'tex
     },
   });
 
-  if (io) {
-    io.to(`user:${receiverId}`).emit('chat_message', message);
-    io.to(`session:chat:${sessionId}`).emit('chat_message', message);
+  let suppressRealtimeForOfflineListener = false;
+  if (receiverId === session.listenerId) {
+    const listenerProfile = await prisma.listenerProfile.findUnique({
+      where: { userId: session.listenerId },
+      select: { availability: true },
+    });
+    suppressRealtimeForOfflineListener =
+      String(listenerProfile?.availability || '')
+        .trim()
+        .toUpperCase() === 'OFFLINE';
+  }
+
+  let messageForDelivery = message;
+  if (suppressRealtimeForOfflineListener) {
+    messageForDelivery = await prisma.chatMessage.update({
+      where: { id: message.id },
+      data: {
+        status: 'SENT',
+      },
+    });
+  }
+
+  if (io && !suppressRealtimeForOfflineListener) {
+    io.to(`user:${receiverId}`).emit('chat_message', messageForDelivery);
+    io.to(`session:chat:${sessionId}`).emit('chat_message', messageForDelivery);
+  } else if (suppressRealtimeForOfflineListener) {
+    logger.info('[Chat] realtime message delivery deferred for offline listener', {
+      sessionId,
+      receiverId,
+      messageId: messageForDelivery.id,
+    });
   }
 
   const senderProfile = senderId === session.userId ? session.user : session.listener;
   const receiverRole = receiverId === session.listenerId ? 'LISTENER' : 'USER';
 
-  Promise.resolve()
-    .then(() =>
-      pushNotificationService.sendChatMessagePush({
-        receiverId,
-        receiverRole,
-        sessionId,
-        messageId: message.id,
-        senderId,
-        senderName: senderProfile?.displayName || 'New message',
-        senderAvatar: senderProfile?.profileImageUrl || null,
-        sessionUserId: session.userId,
-        sessionListenerId: session.listenerId,
-        preview: String(content || '').trim().slice(0, 120),
-      })
-    )
-    .catch((error) => {
-      logger.warn('[Push] chat message notification failed', {
-        sessionId,
-        receiverId,
-        message: error?.message || 'Unknown error',
+  if (!suppressRealtimeForOfflineListener) {
+    Promise.resolve()
+      .then(() =>
+        pushNotificationService.sendChatMessagePush({
+          receiverId,
+          receiverRole,
+          sessionId,
+          messageId: messageForDelivery.id,
+          senderId,
+          senderName: senderProfile?.displayName || 'New message',
+          senderAvatar: senderProfile?.profileImageUrl || null,
+          sessionUserId: session.userId,
+          sessionListenerId: session.listenerId,
+          preview: String(content || '').trim().slice(0, 120),
+        })
+      )
+      .catch((error) => {
+        logger.warn('[Push] chat message notification failed', {
+          sessionId,
+          receiverId,
+          message: error?.message || 'Unknown error',
+        });
       });
-    });
+  }
 
-  return message;
+  return messageForDelivery;
 };
 
 const markRead = async ({ sessionId, readerId, messageIds }) => {
@@ -646,6 +676,51 @@ const markRead = async ({ sessionId, readerId, messageIds }) => {
   return updated;
 };
 
+const reportUserInChat = async ({ reporterId, sessionId, reportedUserId, reason }) => {
+  const session = await prisma.chatSession.findUnique({ where: { id: sessionId } });
+  if (!session) {
+    throw new AppError('Chat session not found', 404, 'CHAT_SESSION_NOT_FOUND');
+  }
+
+  assertChatParticipant(session, reporterId);
+
+  if (![session.userId, session.listenerId].includes(reportedUserId)) {
+    throw new AppError('Reported user is not part of this chat session', 400, 'REPORT_TARGET_INVALID');
+  }
+
+  if (String(reporterId) === String(reportedUserId)) {
+    throw new AppError('You cannot report yourself', 400, 'REPORT_TARGET_INVALID');
+  }
+
+  const safeReason = String(reason || '').trim();
+  if (!safeReason) {
+    throw new AppError('Report reason is required', 400, 'REPORT_REASON_REQUIRED');
+  }
+
+  const ticket = await prisma.supportTicket.create({
+    data: {
+      userId: reporterId,
+      subject: 'Chat user report',
+      message: `Session ${sessionId} report against ${reportedUserId}: ${safeReason}`,
+      priority: 'HIGH',
+      status: 'OPEN',
+    },
+  });
+
+  logger.info('[Chat] report submitted', {
+    sessionId,
+    reporterId,
+    reportedUserId,
+    ticketId: ticket.id,
+  });
+
+  return {
+    ticketId: ticket.id,
+    sessionId,
+    reportedUserId,
+  };
+};
+
 const emitLowBalanceEnded = async (sessionId) => {
   const session = await forceEndChatBySystem({
     sessionId,
@@ -676,6 +751,7 @@ module.exports = {
   getChatMessages,
   sendMessage,
   markRead,
+  reportUserInChat,
   emitLowBalanceEnded,
   getChatChannelName,
 };

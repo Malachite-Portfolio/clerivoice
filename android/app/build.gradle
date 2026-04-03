@@ -126,6 +126,20 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            def hasReleaseSigningConfig =
+                findProperty('CLARIVOICE_UPLOAD_STORE_FILE') &&
+                findProperty('CLARIVOICE_UPLOAD_STORE_PASSWORD') &&
+                findProperty('CLARIVOICE_UPLOAD_KEY_ALIAS') &&
+                findProperty('CLARIVOICE_UPLOAD_KEY_PASSWORD')
+
+            if (hasReleaseSigningConfig) {
+                storeFile file(findProperty('CLARIVOICE_UPLOAD_STORE_FILE'))
+                storePassword findProperty('CLARIVOICE_UPLOAD_STORE_PASSWORD')
+                keyAlias findProperty('CLARIVOICE_UPLOAD_KEY_ALIAS')
+                keyPassword findProperty('CLARIVOICE_UPLOAD_KEY_PASSWORD')
+            }
+        }
     }
     buildTypes {
         debug {
@@ -134,7 +148,12 @@ android {
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            def hasReleaseSigningConfig =
+                findProperty('CLARIVOICE_UPLOAD_STORE_FILE') &&
+                findProperty('CLARIVOICE_UPLOAD_STORE_PASSWORD') &&
+                findProperty('CLARIVOICE_UPLOAD_KEY_ALIAS') &&
+                findProperty('CLARIVOICE_UPLOAD_KEY_PASSWORD')
+            signingConfig hasReleaseSigningConfig ? signingConfigs.release : signingConfigs.debug
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
@@ -165,12 +184,23 @@ android {
 }
 
 tasks.configureEach { task ->
-    if (task.name.startsWith("configureCMake") || task.name.startsWith("buildCMake")) {
-        // Ensure generated RN codegen headers exist before CMake config/build.
-        // This preserves Agora TurboModule/Fabric providers in autolinking.cpp.
+    if (
+        task.name.startsWith("configureCMake") ||
+        task.name.startsWith("buildCMake") ||
+        task.name.startsWith("externalNativeBuild")
+    ) {
+        // Ensure generated RN codegen headers exist before CMake config/build/clean.
+        // This prevents missing JNI codegen directories in New Architecture tasks.
         task.dependsOn("generateAutolinkingNewArchitectureFiles")
+        task.dependsOn(":react-native-async-storage_async-storage:generateCodegenArtifactsFromSchema")
         task.dependsOn(":react-native-agora:generateCodegenArtifactsFromSchema")
         task.dependsOn(":react-native-agora-chat:generateCodegenArtifactsFromSchema")
+        task.dependsOn(":react-native-gesture-handler:generateCodegenArtifactsFromSchema")
+        task.dependsOn(":react-native-reanimated:generateCodegenArtifactsFromSchema")
+        task.dependsOn(":react-native-safe-area-context:generateCodegenArtifactsFromSchema")
+        task.dependsOn(":react-native-screens:generateCodegenArtifactsFromSchema")
+        task.dependsOn(":react-native-svg:generateCodegenArtifactsFromSchema")
+        task.dependsOn(":react-native-worklets:generateCodegenArtifactsFromSchema")
     }
 }
 

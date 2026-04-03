@@ -1,5 +1,6 @@
 package com.anonymous.clarivoice
 
+import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -12,9 +13,23 @@ class OngoingCallServiceModule(reactContext: ReactApplicationContext) :
   override fun getName(): String = "OngoingCallService"
 
   @ReactMethod
-  fun startOngoingCallService(title: String?, subtitle: String?, promise: Promise) {
+  fun startOngoingCallService(
+    title: String?,
+    subtitle: String?,
+    isVideoCall: Boolean?,
+    promise: Promise,
+  ) {
     try {
-      OngoingCallForegroundService.startService(reactApplicationContext, title, subtitle)
+      OngoingCallForegroundService.startService(
+        reactApplicationContext,
+        title,
+        subtitle,
+        isVideoCall == true,
+      )
+      Log.i(
+        "OngoingCallServiceModule",
+        "startOngoingCallService title=${title ?: "null"} isVideoCall=${isVideoCall == true}",
+      )
       promise.resolve(
         buildStateMap(
           running = true,
@@ -28,9 +43,15 @@ class OngoingCallServiceModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun stopOngoingCallService(_title: String?, _subtitle: String?, promise: Promise) {
+  fun stopOngoingCallService(
+    _title: String?,
+    _subtitle: String?,
+    _isVideoCall: Boolean?,
+    promise: Promise,
+  ) {
     try {
       OngoingCallForegroundService.stopService(reactApplicationContext)
+      Log.i("OngoingCallServiceModule", "stopOngoingCallService")
       promise.resolve(
         buildStateMap(
           running = false,

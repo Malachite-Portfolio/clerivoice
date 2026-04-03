@@ -37,7 +37,11 @@ const RenderModeType = agoraRtcSdk?.RenderModeType || {
 const VideoSourceType = agoraRtcSdk?.VideoSourceType || {
   VideoSourceCameraPrimary: 0,
 };
-const createAgoraRtcEngine = agoraRtcSdk?.createAgoraRtcEngine || null;
+const createAgoraRtcEngine =
+  agoraRtcSdk?.createAgoraRtcEngine ||
+  agoraRtcSdk?.RtcEngine?.createAgoraRtcEngine ||
+  agoraRtcSdk?.default?.createAgoraRtcEngine ||
+  null;
 
 let rtcEngine = null;
 let registeredEventHandler = null;
@@ -74,6 +78,12 @@ const logAgoraVoice = (label, payload) => {
 };
 
 const ensureRtcEngine = (appId) => {
+  logAgoraVoice('nativeModuleAvailabilityChecked', {
+    available: Boolean(createAgoraRtcEngine),
+    loadError: agoraRtcLoadError?.message || null,
+    hasAppId: Boolean(appId),
+  });
+
   if (!createAgoraRtcEngine) {
     if (AUTH_DEBUG_ENABLED) {
       console.warn('[AgoraVoice] nativeUnavailable', {
@@ -206,12 +216,14 @@ const ensureVoiceStreamsActive = ({ micMuted = false, reason = 'unknown', speake
 const ensureOngoingCallService = async ({
   sessionId = null,
   subtitle = 'Voice call is active',
+  callType = 'audio',
 } = {}) => {
   foregroundServiceSessionId = sessionId || foregroundServiceSessionId || null;
   await startOngoingCallForegroundService({
     title: 'Clarivoice call in progress',
     subtitle,
     sessionId: foregroundServiceSessionId,
+    callType,
   });
 };
 
@@ -225,6 +237,8 @@ const stopOngoingCallServiceIfNeeded = async ({ reason = 'unknown' } = {}) => {
 };
 
 export const getAgoraVoiceSessionState = () => ({
+  hasNativeModule: Boolean(createAgoraRtcEngine),
+  nativeLoadError: agoraRtcLoadError?.message || null,
   hasEngine: Boolean(rtcEngine),
   hasActiveChannel: Boolean(activeChannelName),
   hasJoinedChannel: Boolean(joinedChannelName),
@@ -239,6 +253,8 @@ export const getAgoraVoiceSessionState = () => ({
 
 export const shouldKeepAgoraVoiceSessionAlive = () =>
   Boolean(rtcEngine && (activeChannelName || joinedChannelName || pendingJoin || pendingLeave));
+
+export const isAgoraRtcNativeModuleAvailable = () => Boolean(createAgoraRtcEngine);
 
 export const joinAgoraVoiceChannel = async ({
   appId,
@@ -314,6 +330,7 @@ export const joinAgoraVoiceChannel = async ({
       normalizedCallType === 'video'
         ? 'Video call is connecting'
         : 'Voice call is connecting',
+    callType: normalizedCallType,
   });
 
   ensureVoiceStreamsActive({
@@ -347,6 +364,7 @@ export const joinAgoraVoiceChannel = async ({
             normalizedCallType === 'video'
               ? 'Video call is active'
               : 'Voice call is active',
+          callType: normalizedCallType,
         }).catch(() => {});
         onJoinSuccess?.();
         resolve(0);

@@ -11,6 +11,7 @@ const {
   chatSessionsQuerySchema,
   chatSendMessageSchema,
   chatTokenRefreshSchema,
+  chatReportSchema,
 } = require('./chat.validator');
 
 const router = express.Router();
@@ -54,5 +55,6 @@ router.post(
 router.get('/sessions', authMiddleware, validate(chatSessionsQuerySchema, 'query'), controller.getSessions);
 router.get('/:sessionId/messages', authMiddleware, controller.getMessages);
 router.post('/:sessionId/messages', authMiddleware, validate(chatSendMessageSchema), controller.sendMessage);
+router.post('/report', authMiddleware, validate(chatReportSchema), controller.reportUser);
 
 module.exports = router;

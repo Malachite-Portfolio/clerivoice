@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, FlatList, Image, Keyboard, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, AppState, FlatList, Image, Keyboard, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsFocused } from '@react-navigation/native';
 import theme from '../constants/theme';
 import { AGORA_CHAT_APP_KEY, AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
 import { resetToAuthEntry } from '../navigation/navigationRef';
-import { isUnauthorizedApiError } from '../services/apiClient';
+import { apiClient, isUnauthorizedApiError } from '../services/apiClient';
 import { addDemoChatMessage, addDemoChatReply } from '../services/demoMode';
 import { connectRealtimeSocket, emitWithAck, getRealtimeSocket } from '../services/realtimeSocket';
 import {
@@ -94,6 +95,17 @@ const formatSuspendedUntil = (value) => {
   });
 };
 
+const formatPresenceLabel = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (normalized === 'ONLINE') {
+    return 'Online';
+  }
+  if (normalized === 'BUSY') {
+    return 'Busy';
+  }
+  return 'Offline';
+};
+
 const ChatSessionScreen = ({ navigation, route }) => {
   const { session: authSession } = useAuth();
   const payload = route?.params?.chatPayload;
@@ -102,6 +114,7 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const currentUserId = authSession?.user?.id;
   const isListener = authSession?.user?.role === 'LISTENER';
   const isDemoSession = Boolean(authSession?.isDemoUser || payload?.demoMode);
+  const isScreenFocused = useIsFocused();
   const [sessionStatus, setSessionStatus] = useState(normalizeChatStatus(payload?.session?.status));
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
@@ -112,6 +125,12 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const [suspendedUntil, setSuspendedUntil] = useState(getSuspendedUntilFromSession(authSession));
   const [isConversationMuted, setIsConversationMuted] = useState(false);
   const [isCounterpartyBlocked, setIsCounterpartyBlocked] = useState(false);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [counterpartyPresence, setCounterpartyPresence] = useState(
+    String(host?.isOnline ? 'ONLINE' : host?.availability || 'OFFLINE')
+      .trim()
+      .toUpperCase(),
+  );
   const timerRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const demoReplyTimeoutRef = useRef(null);
@@ -119,6 +138,10 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const sessionEndedRef = useRef(false);
   const flatListRef = useRef(null);
   const blockedRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState || 'active');
+  const isChatVisibleRef = useRef(
+    isScreenFocused && (AppState.currentState || 'active') === 'active',
+  );
 
   const title = useMemo(() => host?.name || 'Conversation', [host?.name]);
   const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
@@ -130,6 +153,15 @@ const ChatSessionScreen = ({ navigation, route }) => {
         : payload?.session?.listenerId || host?.listenerId || null,
     [host?.listenerId, host?.userId, isListener, payload?.session?.listenerId, payload?.session?.userId],
   );
+
+  useEffect(() => {
+    const nextPresence = String(host?.isOnline ? 'ONLINE' : host?.availability || 'OFFLINE')
+      .trim()
+      .toUpperCase();
+    if (nextPresence) {
+      setCounterpartyPresence(nextPresence);
+    }
+  }, [host?.availability, host?.isOnline]);
 
   const isSuspended = useMemo(() => {
     const suspendedUntilMs = toDateMs(suspendedUntil);
@@ -146,6 +178,33 @@ const ChatSessionScreen = ({ navigation, route }) => {
   useEffect(() => {
     blockedRef.current = isCounterpartyBlocked;
   }, [isCounterpartyBlocked]);
+
+  useEffect(() => {
+    isChatVisibleRef.current = isScreenFocused && appStateRef.current === 'active';
+    logChatDebug('chatVisibilityChanged', {
+      sessionId,
+      isScreenFocused,
+      appState: appStateRef.current,
+      isVisible: isChatVisibleRef.current,
+    });
+  }, [isScreenFocused, sessionId]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      appStateRef.current = nextState;
+      isChatVisibleRef.current = isScreenFocused && nextState === 'active';
+      logChatDebug('chatAppStateChanged', {
+        sessionId,
+        nextState,
+        isScreenFocused,
+        isVisible: isChatVisibleRef.current,
+      });
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isScreenFocused, sessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,6 +287,7 @@ const ChatSessionScreen = ({ navigation, route }) => {
     setInputValue('');
     setLowBalanceWarning('');
     setRemoteTyping(false);
+    setIsSendingMessage(false);
     setElapsedSeconds(0);
     stopTimer();
     logChatDebug('chatSessionStateReset', {
@@ -242,11 +302,37 @@ const ChatSessionScreen = ({ navigation, route }) => {
     });
   }, []);
 
-  const markMessagesRead = useCallback(async (messageIds = []) => {
+  const markMessagesRead = useCallback(async (messageIds = [], options = {}) => {
     if (!messageIds.length) return;
-    updateMessages((prev) => prev.map((item) => (messageIds.includes(item.id) ? { ...item, status: 'READ', readAt: item.readAt || new Date().toISOString() } : item)));
+
+    const force = options?.force === true;
+    if (!force && !isChatVisibleRef.current) {
+      logChatDebug('readReceiptDeferred', {
+        sessionId,
+        messageCount: messageIds.length,
+        reason: 'chat_not_visible',
+      });
+      return;
+    }
+
+    updateMessages((prev) =>
+      prev.map((item) =>
+        messageIds.includes(item.id)
+          ? {
+              ...item,
+              status: 'READ',
+              readAt: item.readAt || new Date().toISOString(),
+            }
+          : item,
+      ),
+    );
     try {
       await emitWithAck('chat_read', { sessionId, messageIds });
+      logChatDebug('readReceiptUpdated', {
+        sessionId,
+        messageCount: messageIds.length,
+        force,
+      });
     } catch (_error) {}
   }, [sessionId, updateMessages]);
 
@@ -254,6 +340,27 @@ const ChatSessionScreen = ({ navigation, route }) => {
     if (!message?.id) return;
     updateMessages((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
   }, [updateMessages]);
+
+  useEffect(() => {
+    if (!sessionId || !isScreenFocused || appStateRef.current !== 'active') {
+      return;
+    }
+
+    const unreadIds = messages
+      .filter((item) => item?.receiverId === currentUserId && item?.status !== 'READ')
+      .map((item) => item.id);
+
+    if (!unreadIds.length) {
+      return;
+    }
+
+    logChatDebug('unreadBadgeSyncStart', {
+      sessionId,
+      unreadCount: unreadIds.length,
+      source: 'screen_visible',
+    });
+    markMessagesRead(unreadIds, { force: true });
+  }, [currentUserId, isScreenFocused, markMessagesRead, messages, sessionId]);
 
   const emitTyping = useCallback((isTyping) => {
     const socket = getRealtimeSocket();
@@ -273,7 +380,14 @@ const ChatSessionScreen = ({ navigation, route }) => {
     sessionEndedRef.current = true;
     emitTyping(false);
     stopTimer();
+    setElapsedSeconds(0);
+    setIsSendingMessage(false);
     setSessionStatus('ENDED');
+    logChatDebug('chatSessionEnded', {
+      sessionId,
+      endReason: eventPayload?.endReason || null,
+      reasonCode: eventPayload?.reasonCode || null,
+    });
     if (eventPayload?.reasonCode === 'LOW_BALANCE') {
       Alert.alert('Insufficient Balance', 'You do not have sufficient balance. Please recharge your wallet to continue.', [{ text: 'OK', onPress: () => navigation.goBack() }]);
     } else {
@@ -347,7 +461,7 @@ const ChatSessionScreen = ({ navigation, route }) => {
         setTargetUserId(otherUserId || host?.userId || null);
         if (liveSession?.startedAt) startTimer(Math.max(0, Math.floor((Date.now() - new Date(liveSession.startedAt).getTime()) / 1000)));
         const unreadIds = historyMessages.filter((item) => item?.receiverId === currentUserId && item?.status !== 'READ').map((item) => item.id);
-        markMessagesRead(unreadIds);
+        markMessagesRead(unreadIds, { force: true });
       } catch (error) {
         if (!isUnauthorizedApiError(error)) setMessages([]);
       }
@@ -421,18 +535,96 @@ const ChatSessionScreen = ({ navigation, route }) => {
         senderId: message?.senderId || null,
       });
       appendMessage(message);
-      if (message?.receiverId === currentUserId) markMessagesRead([message.id]);
+      if (message?.receiverId === currentUserId) {
+        if (isChatVisibleRef.current) {
+          markMessagesRead([message.id], { force: true });
+        } else {
+          logChatDebug('readReceiptDeferred', {
+            sessionId,
+            messageId: message?.id || null,
+            reason: 'incoming_message_when_not_visible',
+          });
+        }
+      }
+    };
+    const onChatRead = (eventPayload) => {
+      if (eventPayload?.sessionId !== sessionId) return;
+      const messageIds = Array.isArray(eventPayload?.messageIds)
+        ? eventPayload.messageIds.filter(Boolean)
+        : [];
+      if (!messageIds.length) {
+        return;
+      }
+      updateMessages((prev) =>
+        prev.map((item) =>
+          messageIds.includes(item.id)
+            ? { ...item, status: 'READ', readAt: item.readAt || new Date().toISOString() }
+            : item,
+        ),
+      );
+      logChatDebug('readReceiptSynced', {
+        sessionId,
+        readerId: eventPayload?.readerId || null,
+        messageCount: messageIds.length,
+      });
     };
     const onTyping = (eventPayload) => { if (eventPayload?.sessionId === sessionId && eventPayload?.senderId !== currentUserId) setRemoteTyping(Boolean(eventPayload?.isTyping)); };
     const onLowBalance = (eventPayload) => { if (eventPayload?.sessionId === sessionId) setLowBalanceWarning(eventPayload?.message || 'Low balance. Please recharge to avoid disconnection.'); };
+    const onListenerStatusChanged = (eventPayload) => {
+      if (isListener || String(eventPayload?.listenerId || '') !== String(counterpartyUserId || '')) {
+        return;
+      }
+      const status = String(eventPayload?.status || eventPayload?.availability || 'OFFLINE')
+        .trim()
+        .toUpperCase();
+      if (!status) {
+        return;
+      }
+      setCounterpartyPresence(status);
+      logChatDebug('presenceUpdate', {
+        sessionId,
+        counterpartyUserId,
+        status,
+        source: 'listener_status_changed',
+      });
+    };
+    const onUserOnline = (eventPayload) => {
+      if (!isListener || String(eventPayload?.userId || '') !== String(counterpartyUserId || '')) {
+        return;
+      }
+      setCounterpartyPresence('ONLINE');
+      logChatDebug('presenceUpdate', {
+        sessionId,
+        counterpartyUserId,
+        status: 'ONLINE',
+        source: 'user_online',
+      });
+    };
+    const onUserOffline = (eventPayload) => {
+      if (!isListener || String(eventPayload?.userId || '') !== String(counterpartyUserId || '')) {
+        return;
+      }
+      setCounterpartyPresence('OFFLINE');
+      logChatDebug('presenceUpdate', {
+        sessionId,
+        counterpartyUserId,
+        status: 'OFFLINE',
+        source: 'user_offline',
+      });
+    };
 
     bootstrap();
     socket.on('chat_started', onChatStarted);
     socket.on('chat_message', onChatMessage);
+    socket.on('chat_read', onChatRead);
     socket.on('chat_typing', onTyping);
     socket.on('chat_low_balance_warning', onLowBalance);
     socket.on('chat_end_due_to_low_balance', handleSessionEnded);
     socket.on('chat_ended', handleSessionEnded);
+    socket.on('listener_status_changed', onListenerStatusChanged);
+    socket.on('host_status_changed', onListenerStatusChanged);
+    socket.on('user_online', onUserOnline);
+    socket.on('user_offline', onUserOffline);
     socket.emit('join_chat_session', { sessionId });
 
     return () => {
@@ -440,10 +632,15 @@ const ChatSessionScreen = ({ navigation, route }) => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       socket.off('chat_started', onChatStarted);
       socket.off('chat_message', onChatMessage);
+      socket.off('chat_read', onChatRead);
       socket.off('chat_typing', onTyping);
       socket.off('chat_low_balance_warning', onLowBalance);
       socket.off('chat_end_due_to_low_balance', handleSessionEnded);
       socket.off('chat_ended', handleSessionEnded);
+      socket.off('listener_status_changed', onListenerStatusChanged);
+      socket.off('host_status_changed', onListenerStatusChanged);
+      socket.off('user_online', onUserOnline);
+      socket.off('user_offline', onUserOffline);
       stopTimer();
       leaveAgoraChatSession().catch(() => {});
     };
@@ -457,12 +654,15 @@ const ChatSessionScreen = ({ navigation, route }) => {
     host?.listenerId,
     host?.userId,
     isDemoSession,
+    isListener,
     markMessagesRead,
     navigation,
+    updateMessages,
     payload?.agora?.appId,
     payload?.agora?.appKey,
     payload?.agora?.token,
     payload?.session,
+    counterpartyUserId,
     sessionId,
     startTimer,
     stopTimer,
@@ -504,7 +704,7 @@ const ChatSessionScreen = ({ navigation, route }) => {
 
   const onSendMessage = async () => {
     const trimmed = inputValue.trim();
-    if (!trimmed || !targetUserId) return;
+    if (!trimmed || !targetUserId || isSendingMessage) return;
     if (isCounterpartyBlocked) {
       return Alert.alert(
         'Blocked contact',
@@ -524,34 +724,40 @@ const ChatSessionScreen = ({ navigation, route }) => {
       return Alert.alert('Chat ended', 'This conversation is no longer active.');
     }
 
+    setIsSendingMessage(true);
+
     if (isDemoSession) {
-      const sent = await addDemoChatMessage(sessionId, {
-        senderId: currentUserId || 'demo-user-1',
-        receiverId: targetUserId,
-        content: trimmed,
-        status: 'READ',
-      });
+      try {
+        const sent = await addDemoChatMessage(sessionId, {
+          senderId: currentUserId || 'demo-user-1',
+          receiverId: targetUserId,
+          content: trimmed,
+          status: 'READ',
+        });
 
-      appendMessage(sent);
-      setInputValue('');
-      setRemoteTyping(false);
-      emitTyping(false);
-
-      if (demoReplyTimeoutRef.current) clearTimeout(demoReplyTimeoutRef.current);
-      if (demoRemoteTypingTimeoutRef.current) clearTimeout(demoRemoteTypingTimeoutRef.current);
-
-      demoRemoteTypingTimeoutRef.current = setTimeout(() => {
-        setRemoteTyping(true);
-      }, 450);
-
-      demoReplyTimeoutRef.current = setTimeout(async () => {
-        const reply = await addDemoChatReply(
-          sessionId,
-          'Demo reply: you can explore the chat UI safely without live billing or OTP.',
-        );
-        appendMessage(reply);
+        appendMessage(sent);
+        setInputValue('');
         setRemoteTyping(false);
-      }, 1500);
+        emitTyping(false);
+
+        if (demoReplyTimeoutRef.current) clearTimeout(demoReplyTimeoutRef.current);
+        if (demoRemoteTypingTimeoutRef.current) clearTimeout(demoRemoteTypingTimeoutRef.current);
+
+        demoRemoteTypingTimeoutRef.current = setTimeout(() => {
+          setRemoteTyping(true);
+        }, 450);
+
+        demoReplyTimeoutRef.current = setTimeout(async () => {
+          const reply = await addDemoChatReply(
+            sessionId,
+            'Demo reply: you can explore the chat UI safely without live billing or OTP.',
+          );
+          appendMessage(reply);
+          setRemoteTyping(false);
+        }, 1500);
+      } finally {
+        setIsSendingMessage(false);
+      }
 
       return;
     }
@@ -598,6 +804,8 @@ const ChatSessionScreen = ({ navigation, route }) => {
       }
 
       Alert.alert(errorCode === 'INSUFFICIENT_BALANCE' ? 'Insufficient Balance' : 'Message failed', error?.message || 'Unable to send message right now.');
+    } finally {
+      setIsSendingMessage(false);
     }
   };
 
@@ -617,6 +825,9 @@ const ChatSessionScreen = ({ navigation, route }) => {
     } finally {
       emitTyping(false);
       stopTimer();
+      setElapsedSeconds(0);
+      setIsSendingMessage(false);
+      setSessionStatus('ENDED');
       await leaveAgoraChatSession().catch(() => {});
       navigation.goBack();
     }
@@ -713,7 +924,7 @@ const ChatSessionScreen = ({ navigation, route }) => {
     : remoteTyping
       ? 'Typing...'
       : sessionStatus === 'ACTIVE'
-        ? 'Online'
+        ? formatPresenceLabel(counterpartyPresence)
         : sessionStatus === 'ENDED'
           ? 'Conversation ended'
           : isDemoSession
@@ -794,12 +1005,24 @@ const ChatSessionScreen = ({ navigation, route }) => {
         latestCall?.requestedAt ||
         latestCall?.createdAt ||
         null;
+      const historyLines = callItems.slice(0, 8).map((item) => {
+        const at =
+          item?.endedAt ||
+          item?.updatedAt ||
+          item?.startedAt ||
+          item?.requestedAt ||
+          item?.createdAt ||
+          new Date().toISOString();
+        const status = String(item?.status || 'UNKNOWN').toUpperCase();
+        const callType = String(item?.callType || 'audio').toUpperCase();
+        return `${callType} ${status} - ${time(at)} - ${duration(Number(item?.durationSeconds || 0))}`;
+      });
 
       Alert.alert(
         'Call history',
         `Total calls: ${callItems.length}\nTotal duration: ${duration(totalDuration)}\nLast call: ${time(
           latestCallAt || new Date().toISOString(),
-        )}\nLatest status: ${String(latestCall?.status || 'UNKNOWN').toUpperCase()}`,
+        )}\nLatest status: ${String(latestCall?.status || 'UNKNOWN').toUpperCase()}\n\nRecent:\n${historyLines.join('\n')}`,
       );
       logChatDebug('callHistoryOpened', {
         sessionId,
@@ -818,6 +1041,88 @@ const ChatSessionScreen = ({ navigation, route }) => {
       }
     }
   }, [authSession?.accessToken, counterpartyUserId, isListener, sessionId]);
+
+  const onOpenCounterpartyProfile = useCallback(() => {
+    const profileData = {
+      id: counterpartyUserId || null,
+      name: host?.name || 'Profile',
+      avatar: host?.avatar || host?.profileImageUrl || null,
+      role: isListener ? 'USER' : 'LISTENER',
+      availability: counterpartyPresence,
+      source: 'chat_header',
+    };
+
+    logChatDebug('profileOpenAttempt', {
+      sessionId,
+      counterpartyUserId,
+      role: profileData.role,
+      availability: counterpartyPresence,
+    });
+
+    if (!counterpartyUserId) {
+      Alert.alert('Profile unavailable', 'Profile details are missing for this conversation.');
+      return;
+    }
+
+    if (isListener) {
+      Alert.alert(
+        profileData.name,
+        `Role: ${profileData.role}\nStatus: ${formatPresenceLabel(counterpartyPresence)}`,
+      );
+      return;
+    }
+
+    navigation.navigate('MainDrawer', {
+      screen: 'Profile',
+      params: {
+        profileMode: 'counterparty',
+        profileData,
+      },
+    });
+  }, [
+    counterpartyPresence,
+    counterpartyUserId,
+    host?.avatar,
+    host?.name,
+    host?.profileImageUrl,
+    isListener,
+    navigation,
+    sessionId,
+  ]);
+
+  const onReportCounterparty = useCallback(async () => {
+    if (!sessionId || !counterpartyUserId) {
+      Alert.alert('Report failed', 'Unable to identify the user to report.');
+      return;
+    }
+
+    logChatDebug('reportActionTriggered', {
+      sessionId,
+      counterpartyUserId,
+    });
+
+    try {
+      await apiClient.post('/chat/report', {
+        sessionId,
+        reportedUserId: counterpartyUserId,
+        reason: 'Inappropriate behavior reported from chat menu',
+      });
+      logChatDebug('reportActionSuccess', {
+        sessionId,
+        counterpartyUserId,
+      });
+      Alert.alert('Report submitted', 'Thanks. Our team will review this report.');
+    } catch (error) {
+      logChatDebug('reportActionFailed', {
+        sessionId,
+        counterpartyUserId,
+        message: error?.response?.data?.message || error?.message || 'Unknown error',
+      });
+      if (!isUnauthorizedApiError(error)) {
+        Alert.alert('Report failed', 'Unable to submit report right now. Please try again.');
+      }
+    }
+  }, [counterpartyUserId, sessionId]);
 
   const onOpenMenu = () => {
     Alert.alert(title, 'Choose an action for this conversation.', [
@@ -840,6 +1145,13 @@ const ChatSessionScreen = ({ navigation, route }) => {
           onOpenCallHistory().catch(() => {});
         },
       },
+      {
+        text: 'Report',
+        style: 'destructive',
+        onPress: () => {
+          onReportCounterparty().catch(() => {});
+        },
+      },
       { text: 'End chat', style: 'destructive', onPress: onEndChat },
       { text: 'Cancel', style: 'cancel' },
     ]);
@@ -858,7 +1170,11 @@ const ChatSessionScreen = ({ navigation, route }) => {
             <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
               <Ionicons name="chevron-back" size={18} color={theme.colors.textPrimary} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.headerMain} activeOpacity={0.9}>
+            <TouchableOpacity
+              style={styles.headerMain}
+              activeOpacity={0.9}
+              onPress={onOpenCounterpartyProfile}
+            >
               <Image source={avatar} style={styles.headerAvatar} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.headerName}>{title}</Text>
@@ -937,10 +1253,13 @@ const ChatSessionScreen = ({ navigation, route }) => {
               }}
             />
             <TouchableOpacity
-              style={[styles.sendBtn, (!inputValue.trim() || isSuspended) && styles.sendBtnDisabled]}
+              style={[
+                styles.sendBtn,
+                (!inputValue.trim() || isSuspended || isSendingMessage) && styles.sendBtnDisabled,
+              ]}
               onPress={onSendMessage}
               activeOpacity={0.85}
-              disabled={!inputValue.trim() || isSuspended}
+              disabled={!inputValue.trim() || isSuspended || isSendingMessage}
             >
               <Ionicons name="send" size={18} color="#FFFFFF" />
             </TouchableOpacity>

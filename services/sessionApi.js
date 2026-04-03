@@ -296,8 +296,14 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
     .map((session) => {
       const participant = resolveSessionParticipant(session, currentUserId);
       const messages = messageHistoryBySessionId[session.id] || [];
-      const lastMessage = messages[messages.length - 1] || null;
-      const unreadCount = messages.filter(
+      const meaningfulMessages = messages.filter(
+        (message) => String(message?.content || '').trim().length > 0,
+      );
+      const lastMessage =
+        meaningfulMessages[meaningfulMessages.length - 1] ||
+        messages[messages.length - 1] ||
+        null;
+      const unreadCount = meaningfulMessages.filter(
         (message) => message?.receiverId === currentUserId && message?.status !== 'READ',
       ).length;
       const preview = lastMessage?.content || getChatFallbackPreview(session.status);
@@ -323,10 +329,10 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
         timestamp,
         sortAt: toTimestamp(timestamp),
         status: session.status,
-        hasMessages: messages.length > 0,
+        hasMessages: meaningfulMessages.length > 0,
       };
     })
-    .filter((item) => item.hasMessages);
+    .filter((item) => item.hasMessages && item?.participant?.id);
 
   const finalItems = chatItems
     .sort((left, right) => right.sortAt - left.sortAt)

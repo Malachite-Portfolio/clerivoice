@@ -56,17 +56,31 @@ const initSocket = ({ httpServer, billingManager, clientOrigin }) => {
 
     if (role === 'LISTENER') {
       prisma.listenerProfile
-        .updateMany({
+        .findUnique({
           where: { userId },
-          data: { availability: 'ONLINE' },
+          select: { availability: true, isEnabled: true },
         })
-        .catch((error) => logger.warn('Failed to mark listener online', error.message));
+        .then((profile) => {
+          const status = String(profile?.availability || 'OFFLINE').trim().toUpperCase();
+          const payload = {
+            listenerId: userId,
+            status,
+            availability: status,
+            isEnabled: profile?.isEnabled ?? true,
+            syncVersion: Date.now(),
+          };
 
-      io.emit('listener_online', {
-        listenerId: userId,
-        status: 'ONLINE',
-        syncVersion: Date.now(),
-      });
+          io.emit('listener_status_changed', payload);
+          io.emit('host_status_changed', payload);
+          io.emit(status === 'ONLINE' ? 'listener_online' : 'listener_offline', payload);
+          logger.info('[Presence] listener socket connected with persisted availability', {
+            listenerId: userId,
+            status,
+          });
+        })
+        .catch((error) =>
+          logger.warn('Failed to read listener availability on connect', error.message),
+        );
     }
 
     io.emit('user_online', { userId, role });

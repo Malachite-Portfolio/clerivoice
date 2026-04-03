@@ -24,6 +24,7 @@ import {
   setLocalVideoEnabled,
   setSpeakerEnabled,
   switchLocalCamera,
+  isAgoraRtcNativeModuleAvailable,
   shouldKeepAgoraVoiceSessionAlive,
 } from '../services/agoraVoiceService';
 import {
@@ -137,6 +138,9 @@ const CallSessionScreen = ({ navigation, route }) => {
   const currentAudioRouteRef = useRef(null);
   const callSyncTimeoutRef = useRef(null);
   const callSyncInFlightRef = useRef(false);
+  const rtcConnectedRef = useRef(false);
+  const remoteUserJoinedRef = useRef(false);
+  const previousSessionIdRef = useRef(sessionId);
   const appStateRef = useRef(AppState.currentState || 'active');
   const localVideoBootstrapTimeoutRef = useRef(null);
   const [isResolvingIncoming, setIsResolvingIncoming] = useState(false);
@@ -252,6 +256,49 @@ const CallSessionScreen = ({ navigation, route }) => {
   }, [isVideoCall, resolvedCallType]);
 
   useEffect(() => {
+    const previousSessionId = previousSessionIdRef.current;
+    const didSwitchSession =
+      Boolean(previousSessionId) &&
+      Boolean(sessionId) &&
+      String(previousSessionId) !== String(sessionId);
+    previousSessionIdRef.current = sessionId;
+
+    if (didSwitchSession && !isDemoSession) {
+      logCallDebug('sessionChangedCleanupStart', {
+        previousSessionId,
+        sessionId,
+      });
+      destroyAgoraVoiceEngine();
+    }
+
+    sessionEndedRef.current = false;
+    callSyncInFlightRef.current = false;
+    hasJoinedAgoraRef.current = false;
+    joiningAgoraRef.current = false;
+    callConnectedRef.current = false;
+    backendMarkedActiveRef.current = runtimePayloadRef.current?.session?.status === 'ACTIVE';
+    callStartedAtRef.current =
+      runtimePayloadRef.current?.session?.startedAt ||
+      runtimePayloadRef.current?.session?.answeredAt ||
+      null;
+    joinAttemptCountRef.current = 0;
+    currentAudioRouteRef.current = null;
+    rtcConnectedRef.current = false;
+    remoteUserJoinedRef.current = false;
+    setCallConnectedState(false, 'session_changed_reset');
+    setElapsedSeconds(0);
+    if (callSyncTimeoutRef.current) {
+      clearTimeout(callSyncTimeoutRef.current);
+      callSyncTimeoutRef.current = null;
+    }
+    logCallDebug('callSessionStateInitialized', {
+      sessionId,
+      didSwitchSession,
+      previousSessionId,
+    });
+  }, [isDemoSession, sessionId, setCallConnectedState]);
+
+  useEffect(() => {
     if (incomingRequest && !runtimePayload) {
       setStatusText(isVideoCall ? 'Incoming video call' : 'Incoming Call');
     }
@@ -355,6 +402,8 @@ const CallSessionScreen = ({ navigation, route }) => {
     hasJoinedAgoraRef.current = false;
     joiningAgoraRef.current = false;
     backendMarkedActiveRef.current = false;
+    rtcConnectedRef.current = false;
+    remoteUserJoinedRef.current = false;
     setCallConnectedState(false, `cleanup_${reason}`);
     if (localVideoBootstrapTimeoutRef.current) {
       clearTimeout(localVideoBootstrapTimeoutRef.current);
@@ -422,6 +471,16 @@ const CallSessionScreen = ({ navigation, route }) => {
       return;
     }
 
+    if (!isAgoraRtcNativeModuleAvailable()) {
+      logCallDebug('agoraNativeUnavailable', {
+        sessionId,
+        source: 'joinAgoraIfNeeded_guard',
+      });
+      throw new Error(
+        'Agora RTC native module is unavailable. Install release APK with native Agora linking enabled.',
+      );
+    }
+
     joiningAgoraRef.current = true;
     joinAttemptCountRef.current += 1;
     const activePayload = runtimePayloadRef.current;
@@ -432,6 +491,8 @@ const CallSessionScreen = ({ navigation, route }) => {
     );
 
     try {
+      rtcConnectedRef.current = false;
+      remoteUserJoinedRef.current = false;
       setHasRemoteVideoFrame(false);
       setRemoteVideoUid(null);
       if (activeCallType === 'video') {
@@ -548,19 +609,17 @@ const CallSessionScreen = ({ navigation, route }) => {
           });
         },
         onUserJoined: (remoteUid) => {
+          remoteUserJoinedRef.current = true;
           if (activeCallType === 'video' && Number.isFinite(Number(remoteUid))) {
             setRemoteVideoUid(Number(remoteUid));
           }
           logCallDebug('remoteUserJoined', {
             sessionId,
             remoteUid,
+            backendMarkedActive: backendMarkedActiveRef.current,
           });
-          if (!callConnectedRef.current) {
-            logCallDebug('callConnectedByRemoteJoin', {
-              sessionId,
-              remoteUid,
-            });
-            activateConnectedState(callStartedAtRef.current || new Date().toISOString());
+          if (!backendMarkedActiveRef.current && !callConnectedRef.current) {
+            setStatusText(activeCallType === 'video' ? 'Connecting video...' : 'Connecting...');
           }
         },
         onUserOffline: (remoteUid) => {
@@ -579,19 +638,16 @@ const CallSessionScreen = ({ navigation, route }) => {
             numericState === 3 ||
             normalizedState === 'connected' ||
             normalizedState === 'connectionstateconnected';
+          rtcConnectedRef.current = rtcConnected;
           logCallDebug('agoraConnectionStateChanged', {
             sessionId,
             state,
             reason,
             rtcConnected,
+            backendMarkedActive: backendMarkedActiveRef.current,
           });
-          if (rtcConnected && !callConnectedRef.current) {
-            logCallDebug('callConnectedByRtcState', {
-              sessionId,
-              state,
-              reason,
-            });
-            activateConnectedState(callStartedAtRef.current || new Date().toISOString());
+          if (rtcConnected && !backendMarkedActiveRef.current && !callConnectedRef.current) {
+            setStatusText(activeCallType === 'video' ? 'Connecting video...' : 'Connecting...');
           }
         },
         onLocalAudioStateChanged: ({ state, reason }) => {
@@ -698,7 +754,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       logCallDebug('callMediaJoinedAck', {
         sessionId,
       });
-      if (callConnectedRef.current || backendMarkedActiveRef.current) {
+      if (backendMarkedActiveRef.current) {
         activateConnectedState(callStartedAtRef.current);
       } else {
         setStatusText(activeCallType === 'video' ? 'Connecting video...' : 'Connecting...');
@@ -725,6 +781,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     activateConnectedState,
     cleanupAgoraSession,
     isDemoSession,
+    isAgoraRtcNativeModuleAvailable,
     requestLocalVideoBootstrap,
     sessionId,
     setCallConnectedState,
@@ -828,12 +885,12 @@ const CallSessionScreen = ({ navigation, route }) => {
         return;
       }
 
-      if (callActive && callStartedAtRef.current) {
+      if (callActive && backendMarkedActiveRef.current && callStartedAtRef.current) {
         activateConnectedState(callStartedAtRef.current);
       }
 
       if (
-        callConnectedRef.current &&
+        (callConnectedRef.current || backendMarkedActiveRef.current) &&
         !hasJoinedAgoraRef.current &&
         !joiningAgoraRef.current
       ) {
@@ -1012,6 +1069,10 @@ const CallSessionScreen = ({ navigation, route }) => {
       sessionId,
       isListener,
       callType: callTypeRef.current,
+      hasAgoraRtcUiModule: Boolean(agoraRtcUiModule),
+      hasRtcSurfaceView: hasAgoraRtcSurfaceView,
+      agoraRtcUiLoadError: agoraRtcUiLoadError?.message || null,
+      hasAgoraRtcNativeModule: isAgoraRtcNativeModuleAvailable(),
       initialStatus:
         runtimePayloadRef.current?.session?.status || incomingRequest?.type || null,
       hasIncomingRequest: Boolean(incomingRequest),
@@ -1165,6 +1226,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     socket.on('call_low_balance_warning', onLowBalance);
     socket.on('call_end_due_to_low_balance', handleSessionEnded);
     socket.on('call_ended', handleSessionEnded);
+    socket.on('call_missed', handleSessionEnded);
     socket.emit('join_call_session', { sessionId });
     if (runtimePayloadRef.current?.session?.status === 'ACTIVE') {
       onCallStarted({
@@ -1181,6 +1243,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       socket.off('call_low_balance_warning', onLowBalance);
       socket.off('call_end_due_to_low_balance', handleSessionEnded);
       socket.off('call_ended', handleSessionEnded);
+      socket.off('call_missed', handleSessionEnded);
       clearTimer({
         reason: 'screen_effect_cleanup',
       });
@@ -1323,7 +1386,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       callStartedAtRef.current =
         runtimePayload?.session?.startedAt || runtimePayload?.session?.answeredAt || callStartedAtRef.current;
 
-      if (hasJoinedAgoraRef.current && callConnectedRef.current) {
+      if (hasJoinedAgoraRef.current && backendMarkedActiveRef.current) {
         activateConnectedState(callStartedAtRef.current);
       }
     }

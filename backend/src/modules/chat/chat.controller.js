@@ -90,6 +90,17 @@ const sendMessage = asyncHandler(async (req, res) => {
   return successResponse(res, data, 'Message sent');
 });
 
+const reportUser = asyncHandler(async (req, res) => {
+  const data = await chatService.reportUserInChat({
+    reporterId: req.user.id,
+    sessionId: req.body.sessionId,
+    reportedUserId: req.body.reportedUserId,
+    reason: req.body.reason,
+  });
+
+  return successResponse(res, data, 'Report submitted');
+});
+
 const refreshChatToken = asyncHandler(async (req, res) => {
   const data = await chatService.renewChatToken({
     actorId: req.user.id,
@@ -110,4 +121,5 @@ module.exports = {
   getSessions,
   getMessages,
   sendMessage,
+  reportUser,
 };

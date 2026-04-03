@@ -21,4 +21,11 @@
 -dontwarn io.agora.**
 -dontwarn com.chatsdk.**
 
+# Keep app-native bridge modules used by JS reflection in release builds.
+-keep class com.anonymous.clarivoice.CallAudioManagerPackage { *; }
+-keep class com.anonymous.clarivoice.CallAudioManagerModule { *; }
+-keep class com.anonymous.clarivoice.OngoingCallServiceModule { *; }
+-keep class com.anonymous.clarivoice.OngoingCallForegroundService { *; }
+-keep class com.anonymous.clarivoice.IncomingRingtoneModule { *; }
+
 # Add any project specific keep options here:

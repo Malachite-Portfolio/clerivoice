@@ -346,6 +346,7 @@ const sendMissedCallPush = async ({
       type: 'missed_call',
       sessionId,
       callType: normalizedCallType,
+      receiverRole: String(receiverRole || '').trim().toUpperCase() || null,
       callerId: callerId || null,
       callerName: callerName || 'Unknown caller',
       callerAvatar: callerAvatar || '',

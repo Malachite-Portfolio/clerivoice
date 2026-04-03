@@ -59,6 +59,10 @@ const HomeScreen = ({ navigation }) => {
   });
 
   const inboxItems = useMemo(() => inboxQuery.data || [], [inboxQuery.data]);
+  const userAvatarSource = useMemo(() => {
+    const avatarUrl = String(session?.user?.profileImageUrl || '').trim();
+    return avatarUrl ? { uri: avatarUrl } : avatarPlaceholder;
+  }, [session?.user?.profileImageUrl]);
 
   const refreshLiveData = useCallback(async () => {
     await Promise.all([
@@ -125,7 +129,14 @@ const HomeScreen = ({ navigation }) => {
     };
   }), [hostsQuery.data?.items]);
 
-  const normalizedSearchQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+  const normalizedSearchQuery = useMemo(
+    () =>
+      String(searchQuery || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase(),
+    [searchQuery],
+  );
 
   const filteredHosts = useMemo(() => {
     if (!normalizedSearchQuery) {
@@ -313,7 +324,7 @@ const HomeScreen = ({ navigation }) => {
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <TouchableOpacity style={styles.avatarShell} activeOpacity={0.85} onPress={() => navigation.openDrawer()}>
-                <Image source={avatarPlaceholder} style={styles.avatar} />
+                <Image source={userAvatarSource} style={styles.avatar} />
               </TouchableOpacity>
               <View style={styles.headerText}>
                 <Text style={styles.greeting}>Good Evening,</Text>
@@ -338,6 +349,15 @@ const HomeScreen = ({ navigation }) => {
               ref={searchInputRef}
               value={searchQuery}
               onChangeText={setSearchQuery}
+              onSubmitEditing={() => {
+                if (!AUTH_DEBUG_ENABLED) {
+                  return;
+                }
+                console.log('[HomeScreen] searchSubmitted', {
+                  query: normalizedSearchQuery || null,
+                  activeTab,
+                });
+              }}
               placeholder={activeTab === 'Inbox' ? 'Search inbox...' : 'Search hosts...'}
               placeholderTextColor="rgba(255,255,255,0.4)"
               style={styles.searchInput}
@@ -382,7 +402,26 @@ const HomeScreen = ({ navigation }) => {
           {activeTab === 'Verified' ? (
             <>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storyRow}>
-                {filteredHosts.slice(0, 8).map((story) => <StoryAvatar key={story.id} name={story.name} online={story.isOnline} image={story.avatar} onPress={() => Alert.alert(story.name, 'Host profile preview')} />)}
+                {filteredHosts.slice(0, 8).map((story) => (
+                  <StoryAvatar
+                    key={story.id}
+                    name={story.name}
+                    online={story.isOnline}
+                    image={story.avatar}
+                    onPress={() =>
+                      navigation.navigate('Profile', {
+                        profileMode: 'counterparty',
+                        profileData: {
+                          id: story.listenerId || story.id,
+                          name: story.name,
+                          avatar: typeof story.avatar === 'string' ? story.avatar : null,
+                          role: 'LISTENER',
+                          availability: story.isOnline ? 'ONLINE' : 'OFFLINE',
+                        },
+                      })
+                    }
+                  />
+                ))}
               </ScrollView>
               <TouchableOpacity style={styles.anonCard} onPress={() => setShowAnonymousModal(true)} activeOpacity={0.9}>
                 <MaterialCommunityIcons name="incognito" size={20} color={theme.colors.magenta} style={{ marginRight: 10 }} />

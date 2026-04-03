@@ -223,6 +223,21 @@ const buildIncomingCallNavigationIntent = (data) => ({
   },
 });
 
+const buildMissedCallNavigationIntent = (data) => {
+  const receiverRole = String(data?.receiverRole || '').trim().toUpperCase();
+  if (receiverRole === 'LISTENER') {
+    return {
+      routeName: 'ListenerHome',
+      params: {},
+    };
+  }
+
+  return {
+    routeName: 'MainDrawer',
+    params: {},
+  };
+};
+
 export const buildNotificationNavigationIntent = (data = {}) => {
   const normalizedType = String(data?.type || '').trim().toLowerCase();
 
@@ -232,6 +247,10 @@ export const buildNotificationNavigationIntent = (data = {}) => {
 
   if (normalizedType === 'incoming_call' && data?.sessionId) {
     return buildIncomingCallNavigationIntent(data);
+  }
+
+  if (normalizedType === 'missed_call' && data?.sessionId) {
+    return buildMissedCallNavigationIntent(data);
   }
 
   return null;

@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import SplashScreen from '../../screens/SplashScreen';
 import ListenerLoginScreen from '../../screens/ListenerLoginScreen';
 import ListenerHomeScreen from '../../screens/ListenerHomeScreen';
+import ProfileScreen from '../../screens/ProfileScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -17,6 +18,7 @@ const ListenerAppNavigator = () => {
       <Stack.Screen name="Splash" component={SplashScreen} />
       <Stack.Screen name="ListenerLogin" component={ListenerLoginScreen} />
       <Stack.Screen name="ListenerHome" component={ListenerHomeScreen} />
+      <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen
         name="CallSession"
         getComponent={() => require('../../screens/CallSessionScreen').default}

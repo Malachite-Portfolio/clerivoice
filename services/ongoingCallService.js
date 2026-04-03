@@ -24,7 +24,11 @@ const runNativeOngoingCallServiceCall = async (methodName, payload = {}) => {
   try {
     const result =
       typeof OngoingCallService[methodName] === 'function'
-        ? await OngoingCallService[methodName](payload?.title || null, payload?.subtitle || null)
+        ? await OngoingCallService[methodName](
+            payload?.title || null,
+            payload?.subtitle || null,
+            String(payload?.callType || '').trim().toLowerCase() === 'video',
+          )
         : null;
 
     logOngoingCallService(methodName, {
@@ -52,11 +56,13 @@ export const startOngoingCallForegroundService = async ({
   title = 'Clarivoice call in progress',
   subtitle = 'Voice call is active',
   sessionId = null,
+  callType = 'audio',
 } = {}) =>
   runNativeOngoingCallServiceCall('startOngoingCallService', {
     title,
     subtitle,
     sessionId,
+    callType,
   });
 
 export const stopOngoingCallForegroundService = async ({

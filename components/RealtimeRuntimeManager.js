@@ -614,20 +614,12 @@ const RealtimeRuntimeManager = () => {
         String(session?.user?.role || '').trim().toUpperCase() === 'LISTENER'
       ) {
         const socket = getRealtimeSocket();
-        if (socket) {
-          if (appState === 'active') {
-            socket.emit('listener_online');
-            logRealtimeRuntime('listenerPresenceEmit', {
-              status: 'ONLINE',
-              reason: 'app_foreground',
-            });
-          } else if (!activeCall?.sessionId) {
-            socket.emit('listener_offline');
-            logRealtimeRuntime('listenerPresenceEmit', {
-              status: 'OFFLINE',
-              reason: 'app_background_no_active_call',
-            });
-          }
+        if (socket && appState !== 'active' && !activeCall?.sessionId) {
+          socket.emit('listener_offline');
+          logRealtimeRuntime('listenerPresenceEmit', {
+            status: 'OFFLINE',
+            reason: 'app_background_no_active_call',
+          });
         }
       }
 
@@ -883,6 +875,15 @@ const RealtimeRuntimeManager = () => {
 
       stopIncomingCallRingtone(payload, 'call_ended');
     };
+    const onCallMissed = (payload) => {
+      invalidateRealtimeQueries();
+      clearActiveCall('socket_call_missed', payload?.sessionId || null);
+      stopIncomingCallRingtone(payload, 'missed_call_timeout');
+      logRealtimeRuntime('missedCallCreated', {
+        sessionId: payload?.sessionId || null,
+        reasonCode: payload?.reasonCode || null,
+      });
+    };
 
     socket.on('call_request', onIncomingCall);
     socket.on('chat_message', onChatMessage);
@@ -891,6 +892,7 @@ const RealtimeRuntimeManager = () => {
     socket.on('call_started', onCallStarted);
     socket.on('call_rejected', onCallRejected);
     socket.on('call_ended', onCallEnded);
+    socket.on('call_missed', onCallMissed);
     socket.on('session_ended', onCallEnded);
     socket.on('wallet_updated', onWalletUpdated);
 
@@ -902,6 +904,7 @@ const RealtimeRuntimeManager = () => {
       socket.off('call_started', onCallStarted);
       socket.off('call_rejected', onCallRejected);
       socket.off('call_ended', onCallEnded);
+      socket.off('call_missed', onCallMissed);
       socket.off('session_ended', onCallEnded);
       socket.off('wallet_updated', onWalletUpdated);
 

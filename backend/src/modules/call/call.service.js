@@ -238,6 +238,123 @@ const scheduleMissedCallTimeout = (sessionId) => {
   });
 };
 
+const hydrateCallSessionParticipants = async (session) => {
+  if (!session?.id) {
+    return session;
+  }
+
+  if (session?.user && session?.listener) {
+    return session;
+  }
+
+  const hydrated = await prisma.callSession.findUnique({
+    where: { id: session.id },
+    include: {
+      user: {
+        select: {
+          id: true,
+          displayName: true,
+          profileImageUrl: true,
+        },
+      },
+      listener: {
+        select: {
+          id: true,
+          displayName: true,
+          profileImageUrl: true,
+        },
+      },
+    },
+  });
+
+  return hydrated || session;
+};
+
+const emitMissedCallArtifacts = async ({
+  session,
+  reasonCode = 'MISSED',
+  callerId = null,
+  notifyUser = false,
+  notifyListener = false,
+}) => {
+  const hydratedSession = await hydrateCallSessionParticipants(session);
+  if (!hydratedSession?.id) {
+    return;
+  }
+
+  const callType = await resolveCallTypeFromSessionId(hydratedSession.id);
+  const missedAt = new Date().toISOString();
+
+  await prisma.callEvent.create({
+    data: {
+      sessionId: hydratedSession.id,
+      eventType: 'call_missed',
+      payload: {
+        reasonCode,
+        callType,
+        callerId: callerId || null,
+        missedAt,
+      },
+    },
+  });
+
+  const pushTasks = [];
+
+  if (notifyUser) {
+    pushTasks.push(
+      pushNotificationService.sendMissedCallPush({
+        receiverId: hydratedSession.userId,
+        receiverRole: 'USER',
+        sessionId: hydratedSession.id,
+        callerId: callerId || hydratedSession.listenerId,
+        callerName: hydratedSession.listener?.displayName || 'Host',
+        callerAvatar: hydratedSession.listener?.profileImageUrl || null,
+        userId: hydratedSession.userId,
+        listenerId: hydratedSession.listenerId,
+        callType,
+        missedAt,
+      }),
+    );
+  }
+
+  if (notifyListener) {
+    pushTasks.push(
+      pushNotificationService.sendMissedCallPush({
+        receiverId: hydratedSession.listenerId,
+        receiverRole: 'LISTENER',
+        sessionId: hydratedSession.id,
+        callerId: callerId || hydratedSession.userId,
+        callerName: hydratedSession.user?.displayName || 'User',
+        callerAvatar: hydratedSession.user?.profileImageUrl || null,
+        userId: hydratedSession.userId,
+        listenerId: hydratedSession.listenerId,
+        callType,
+        missedAt,
+      }),
+    );
+  }
+
+  await Promise.allSettled(pushTasks);
+
+  if (io) {
+    emitCallRealtime(hydratedSession, 'call_missed', {
+      sessionId: hydratedSession.id,
+      reasonCode,
+      callType,
+      callerId: callerId || null,
+      missedAt,
+    });
+  }
+
+  logger.info('[CallLifecycle] missed call artifacts emitted', {
+    sessionId: hydratedSession.id,
+    reasonCode,
+    callerId: callerId || null,
+    notifyUser,
+    notifyListener,
+  });
+};
+
 const finalizeCallSession = async ({
   session,
   status,
@@ -590,6 +707,14 @@ const rejectCall = async ({ listenerId, sessionId, reason }) => {
     reason: reason || 'Call rejected',
   });
 
+  await emitMissedCallArtifacts({
+    session,
+    reasonCode: 'CALL_REJECTED',
+    callerId: listenerId,
+    notifyUser: true,
+    notifyListener: false,
+  });
+
   return updated;
 };
 
@@ -602,9 +727,10 @@ const endCall = async ({ actorId, sessionId, endReason = 'USER_ENDED' }) => {
   const actorRole = resolveSessionRole(session, actorId);
   const normalizedEndReason =
     endReason || (actorRole === 'LISTENER' ? 'LISTENER_ENDED' : 'USER_ENDED');
+  const endedBeforeConnection = session.status !== 'ACTIVE';
   clearPendingRingingTimeout(sessionId, 'end_call');
 
-  return finalizeCallSession({
+  const updated = await finalizeCallSession({
     session,
     status: session.status === 'ACTIVE' ? 'ENDED' : 'CANCELLED',
     endReason: normalizedEndReason,
@@ -612,6 +738,21 @@ const endCall = async ({ actorId, sessionId, endReason = 'USER_ENDED' }) => {
     endedBy: actorId,
     force: false,
   });
+
+  if (endedBeforeConnection) {
+    await emitMissedCallArtifacts({
+      session,
+      reasonCode:
+        actorRole === 'LISTENER'
+          ? 'CANCELLED_BY_LISTENER_BEFORE_CONNECT'
+          : 'CANCELLED_BY_USER_BEFORE_CONNECT',
+      callerId: actorId,
+      notifyUser: actorRole === 'LISTENER',
+      notifyListener: actorRole !== 'LISTENER',
+    });
+  }
+
+  return updated;
 };
 
 const forceEndCallBySystem = async ({

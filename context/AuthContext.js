@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import axios from 'axios';
 import {
   API_BASE_URL,
   AUTH_CLEAR_ON_STARTUP_ONCE_ENABLED,
@@ -9,6 +10,8 @@ import { resetToAuthEntry } from '../navigation/navigationRef';
 import {
   isUnauthorizedApiError,
   setApiAccessToken,
+  setApiRefreshToken,
+  setApiTokenRefreshHandler,
   setApiUnauthorizedHandler,
 } from '../services/apiClient';
 import { disconnectRealtimeSocket } from '../services/realtimeSocket';
@@ -64,6 +67,10 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
   const [session, setSessionState] = useState(null);
   const [isHydrated, setIsHydrated] = useState(false);
   const unauthorizedResetInFlightRef = useRef(false);
+  const sessionRef = useRef(null);
+  const refreshRequestInFlightRef = useRef(null);
+
+  const refreshEndpointUrl = API_BASE_URL ? `${API_BASE_URL}/auth/refresh` : '';
 
   const enforceAllowedRole = useCallback((nextSession) => {
     const normalizedSession = normalizeSessionPayload(nextSession);
@@ -85,6 +92,10 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
 
     console.log(`[ExpoAuth] ${label}`, payload);
   }, []);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   const isRecoverableBootstrapError = useCallback((error) => {
     if (isUnauthorizedApiError(error)) {
@@ -243,6 +254,7 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
     disconnectRealtimeSocket();
     setSessionState(null);
     setApiAccessToken(null);
+    setApiRefreshToken(null);
     await Promise.all([
       AsyncStorage.removeItem(authStorageKey),
       AsyncStorage.removeItem(accessTokenStorageKey),
@@ -265,6 +277,85 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
     roleStorageKey,
     userStorageKey,
   ]);
+
+  const refreshAccessToken = useCallback(
+    async ({ reason = 'api_unauthorized' } = {}) => {
+      if (refreshRequestInFlightRef.current) {
+        return refreshRequestInFlightRef.current;
+      }
+
+      const activeSession = sessionRef.current;
+      const activeRefreshToken = activeSession?.refreshToken || null;
+
+      if (!activeRefreshToken || !refreshEndpointUrl) {
+        logAuthDebug('refreshTokenUnavailable', {
+          reason,
+          hasRefreshToken: Boolean(activeRefreshToken),
+          hasRefreshEndpoint: Boolean(refreshEndpointUrl),
+        });
+        return null;
+      }
+
+      const refreshPromise = (async () => {
+        try {
+          logAuthDebug('refreshStart', {
+            reason,
+          });
+
+          const response = await axios.post(
+            refreshEndpointUrl,
+            {
+              refreshToken: activeRefreshToken,
+            },
+            {
+              timeout: 15000,
+            },
+          );
+
+          const nextAccessToken = String(response?.data?.data?.accessToken || '').trim();
+          if (!nextAccessToken) {
+            logAuthDebug('refreshMissingAccessToken', {
+              reason,
+            });
+            return null;
+          }
+
+          const refreshedSession = enforceAllowedRole({
+            ...(activeSession || {}),
+            accessToken: nextAccessToken,
+            refreshToken: activeRefreshToken,
+          });
+
+          setSessionState(refreshedSession);
+          setApiAccessToken(nextAccessToken);
+          setApiRefreshToken(activeRefreshToken);
+          await persistSession(refreshedSession);
+
+          logAuthDebug('refreshSuccess', {
+            reason,
+          });
+
+          return nextAccessToken;
+        } catch (error) {
+          logAuthDebug('refreshFailure', {
+            reason,
+            status: error?.response?.status ?? null,
+            code: error?.response?.data?.code || error?.code || null,
+            message: error?.response?.data?.message || error?.message || 'Unknown error',
+          });
+          return null;
+        }
+      })();
+
+      refreshRequestInFlightRef.current = refreshPromise;
+      try {
+        return await refreshPromise;
+      } finally {
+        refreshRequestInFlightRef.current = null;
+      }
+    },
+    [enforceAllowedRole, logAuthDebug, persistSession, refreshEndpointUrl],
+  );
 
   const handleUnauthorizedSession = useCallback(
     async (error) => {
@@ -294,11 +385,13 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
 
   useEffect(() => {
     setApiUnauthorizedHandler(handleUnauthorizedSession);
+    setApiTokenRefreshHandler(() => refreshAccessToken({ reason: 'api_interceptor_unauthorized' }));
 
     return () => {
       setApiUnauthorizedHandler(null);
+      setApiTokenRefreshHandler(null);
     };
-  }, [handleUnauthorizedSession]);
+  }, [handleUnauthorizedSession, refreshAccessToken]);
 
   useEffect(() => {
     const hydrateSession = async () => {
@@ -339,6 +432,7 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
         if (!parsed) {
           setSessionState(null);
           setApiAccessToken(null);
+          setApiRefreshToken(null);
           return;
         }
 
@@ -355,6 +449,7 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
         }
 
         setApiAccessToken(storedAccessToken);
+        setApiRefreshToken(parsed?.refreshToken || null);
 
         const validatedUser = await validateStoredSession(parsed?.user || null);
         const nextSession = enforceAllowedRole({
@@ -378,6 +473,7 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
           try {
             const fallbackSession = enforceAllowedRole(parsed);
             setApiAccessToken(fallbackSession?.accessToken || null);
+            setApiRefreshToken(fallbackSession?.refreshToken || null);
             setSessionState(fallbackSession);
             await persistSession(fallbackSession);
             logAuthDebug('bootstrap validation deferred', {
@@ -440,6 +536,7 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
         const normalizedSession = enforceAllowedRole(nextSession);
         setSessionState(normalizedSession);
         setApiAccessToken(normalizedSession?.accessToken || null);
+        setApiRefreshToken(normalizedSession?.refreshToken || null);
         try {
           await persistSession(normalizedSession);
         } catch (error) {

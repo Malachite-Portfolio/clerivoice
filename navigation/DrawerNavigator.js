@@ -33,6 +33,9 @@ const sectionBreaks = {
 
 const CustomDrawerContent = ({ navigation }) => {
   const { session, logout } = useAuth();
+  const avatarSource = String(session?.user?.profileImageUrl || '').trim()
+    ? { uri: String(session?.user?.profileImageUrl || '').trim() }
+    : avatarPlaceholder;
 
   const navigateToRoute = (routeName) => {
     const parentNavigation = navigation.getParent();
@@ -83,7 +86,7 @@ const CustomDrawerContent = ({ navigation }) => {
           <View style={styles.userBox}>
             <AppLogo size="sm" style={styles.drawerLogo} />
             {/* Replace with dedicated avatar placeholder in assets/main if available */}
-            <Image source={avatarPlaceholder} style={styles.userAvatar} />
+            <Image source={avatarSource} style={styles.userAvatar} />
             <Text style={styles.userName}>
               {session?.user?.displayName || 'Anonymous'}
             </Text>

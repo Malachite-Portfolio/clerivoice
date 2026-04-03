@@ -15,6 +15,7 @@ import { AppVariantProvider } from '../context/AppVariantContext';
 import { CallSessionProvider } from '../context/CallSessionContext';
 import { WalletFlowProvider } from '../context/WalletFlowContext';
 import { queryClient } from '../services/queryClient';
+import { AUTH_DEBUG_ENABLED } from '../constants/api';
 
 const navigationTheme = {
   ...DefaultTheme,
@@ -32,8 +33,21 @@ const AppShell = ({ NavigatorComponent, validateStoredSession, variantConfig }) 
   configureNavigationRoutes(variantConfig);
 
   useEffect(() => {
+    if (AUTH_DEBUG_ENABLED) {
+      console.log('[AppShell] appStartup', {
+        appVariant: variantConfig?.appVariantName || null,
+        authEntryRouteName: variantConfig?.authEntryRouteName || null,
+        homeRouteName: variantConfig?.homeRouteName || null,
+      });
+    }
+
     const subscription = AppState.addEventListener('change', (status) => {
       focusManager.setFocused(status === 'active');
+      if (AUTH_DEBUG_ENABLED) {
+        console.log('[AppShell] appStateChanged', {
+          status,
+        });
+      }
     });
 
     return () => {
