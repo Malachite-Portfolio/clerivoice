@@ -105,6 +105,7 @@ const ListenerLoginScreen = ({ navigation }) => {
 
       const message =
         apiError?.response?.data?.message ||
+        apiError?.message ||
         'Unable to send listener OTP right now. Please try again.';
       setError(message);
       Alert.alert('OTP Failed', message);
@@ -174,6 +175,7 @@ const ListenerLoginScreen = ({ navigation }) => {
 
       const message =
         apiError?.response?.data?.message ||
+        apiError?.message ||
         'Unable to verify listener OTP right now. Please try again.';
       setError(message);
       Alert.alert('OTP Verification Failed', message);
