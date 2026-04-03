@@ -111,6 +111,7 @@ Important vars:
 - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`
 - `DEMO_OTP_MODE=true` for local demo OTP
 - `PAYMENT_PROVIDER=mock|razorpay|stripe`
+- `PROFILE_IMAGE_PUBLIC_BASE_URL` (optional; example: `https://your-backend.up.railway.app`)
 
 ## Setup
 ```bash
@@ -162,6 +163,7 @@ If `AGORA_APP_ID` or `AGORA_APP_CERTIFICATE` is missing, startup fails with:
 ### Profile
 - `GET /api/v1/me`
 - `PATCH /api/v1/me`
+- `POST /api/v1/me/avatar/upload` (multipart form-data with `avatar` file)
 - `DELETE /api/v1/me`
 
 ### Listeners
@@ -289,5 +291,7 @@ Also set your existing:
 - `JWT_ACCESS_SECRET`
 - `JWT_REFRESH_SECRET`
 - `CLIENT_ORIGIN=https://admin-panel-ivory-eight-58.vercel.app,http://localhost:3000,http://localhost:19006`
+- Optional for uploaded profile image URLs:
+  - `PROFILE_IMAGE_PUBLIC_BASE_URL=https://your-backend.up.railway.app`
 
 Do not commit `.env` files with secrets.

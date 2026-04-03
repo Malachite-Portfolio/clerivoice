@@ -10,12 +10,14 @@ import StoryAvatar from '../components/StoryAvatar';
 import SupportCard from '../components/SupportCard';
 import WalletPill from '../components/WalletPill';
 import BottomSheetAnonymous from '../components/BottomSheetAnonymous';
+import HostPreviewModal from '../components/HostPreviewModal';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { useWalletFlow } from '../context/WalletFlowContext';
 import { resetToAuthEntry } from '../navigation/navigationRef';
 import { isUnauthorizedApiError } from '../services/apiClient';
+import { resolveAvatarSource, resolveAvatarUri } from '../services/avatarResolver';
 import { fetchHostAvailability, fetchHosts } from '../services/listenersApi';
 import { getChatSessions, getInboxItems, getWalletSummary, requestCall, requestChat } from '../services/sessionApi';
 import { connectRealtimeSocket, subscribeRealtimeSocketState } from '../services/realtimeSocket';
@@ -24,12 +26,10 @@ import { requestCallAudioPermissions } from '../services/audioPermissions';
 import { getCallStatusMessageByCode, getCallStatusMessageFromError } from '../services/callStatusMessage';
 import { isUserBlocked } from '../services/chatInteractionPrefs';
 
-const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const TABS = ['Verified', 'Inbox'];
 const SYNC = { connected: 'connected', reconnecting: 'reconnecting', disconnected: 'disconnected' };
 const hostQueryParams = { page: 1, limit: 30, includeOnlyActive: true, includeOnlyVisible: true };
 const up = (v) => String(v || '').toUpperCase();
-const img = (v) => (typeof v === 'string' ? { uri: v } : v || avatarPlaceholder);
 const fmtTime = (v) => {
   if (!v) return '';
   const d = new Date(v);
@@ -47,6 +47,7 @@ const HomeScreen = ({ navigation }) => {
   const [showAnonymousModal, setShowAnonymousModal] = useState(false);
   const [socketState, setSocketState] = useState(SYNC.disconnected);
   const [searchQuery, setSearchQuery] = useState('');
+  const [previewHost, setPreviewHost] = useState(null);
   const searchInputRef = useRef(null);
 
   const hostsQuery = useQuery({ queryKey: queryKeys.hosts.list(hostQueryParams), queryFn: () => fetchHosts(hostQueryParams), staleTime: 10000 });
@@ -60,9 +61,22 @@ const HomeScreen = ({ navigation }) => {
 
   const inboxItems = useMemo(() => inboxQuery.data || [], [inboxQuery.data]);
   const userAvatarSource = useMemo(() => {
-    const avatarUrl = String(session?.user?.profileImageUrl || '').trim();
-    return avatarUrl ? { uri: avatarUrl } : avatarPlaceholder;
-  }, [session?.user?.profileImageUrl]);
+    return resolveAvatarSource({
+      uploadedImageUrl: session?.user?.uploadedProfileImageUrl || null,
+      profileImageUrl: session?.user?.profileImageUrl || null,
+      id: session?.user?.id || null,
+      phone: session?.user?.phone || null,
+      name: session?.user?.displayName || null,
+      role: session?.user?.role || null,
+    });
+  }, [
+    session?.user?.displayName,
+    session?.user?.id,
+    session?.user?.phone,
+    session?.user?.profileImageUrl,
+    session?.user?.role,
+    session?.user?.uploadedProfileImageUrl,
+  ]);
 
   const refreshLiveData = useCallback(async () => {
     await Promise.all([
@@ -107,27 +121,56 @@ const HomeScreen = ({ navigation }) => {
     }
   }, [setCurrentBalance, walletQuery.data?.balance]);
 
-  const hosts = useMemo(() => (hostsQuery.data?.items || []).filter((item) => {
-    const visibility = up(item?.visibility || item?.profileVisibility);
-    const status = up(item?.status || item?.accountStatus || item?.user?.status);
-    const verification = up(item?.verificationStatus);
-    return item?.isVisible !== false && item?.isEnabled !== false && !['HIDDEN', 'DELETED'].includes(visibility) && !['BLOCKED', 'SUSPENDED', 'DELETED', 'INACTIVE'].includes(status) && (!verification || verification === 'VERIFIED');
-  }).map((item) => {
-    const callRate = Number(item.callRatePerMinute || 0);
-    return {
-      id: item.userId,
-      listenerId: item.userId,
-      name: item.user?.displayName || 'Support Host',
-      rating: Number(item.rating || 0) || 4.8,
-      experience: `${item.experienceYears || 0}+ yrs exp`,
-      quote: item.bio || `A safe and private support space with ${item.user?.displayName || 'this host'}.`,
-      price: `${callRate}/min`,
-      avatar: item.user?.profileImageUrl || avatarPlaceholder,
-      isOnline: up(item.availability) === 'ONLINE',
-      chatRatePerMinute: Number(item.chatRatePerMinute || callRate),
-      callRatePerMinute: callRate,
-    };
-  }), [hostsQuery.data?.items]);
+  const hosts = useMemo(
+    () =>
+      (hostsQuery.data?.items || [])
+        .filter((item) => {
+          const visibility = up(item?.visibility || item?.profileVisibility);
+          const status = up(item?.status || item?.accountStatus || item?.user?.status);
+          const verification = up(item?.verificationStatus);
+          return (
+            item?.isVisible !== false &&
+            item?.isEnabled !== false &&
+            !['HIDDEN', 'DELETED'].includes(visibility) &&
+            !['BLOCKED', 'SUSPENDED', 'DELETED', 'INACTIVE'].includes(status) &&
+            (!verification || verification === 'VERIFIED')
+          );
+        })
+        .map((item) => {
+          const callRate = Number(item.callRatePerMinute || 0);
+          const avatarUrl = resolveAvatarUri({
+            uploadedImageUrl: item?.user?.uploadedProfileImageUrl || null,
+            profileImageUrl: item?.user?.profileImageUrl || null,
+            id: item?.userId || null,
+            userId: item?.userId || null,
+            name: item?.user?.displayName || null,
+            role: 'LISTENER',
+          });
+          return {
+            id: item.userId,
+            listenerId: item.userId,
+            name: item.user?.displayName || 'Support Host',
+            rating: Number(item.rating || 0) || 4.8,
+            reviewCount: Number(item.totalSessions || 0) || 0,
+            experience: `${item.experienceYears || 0}+ yrs exp`,
+            experienceYears: Number(item.experienceYears || 0),
+            quote:
+              item.bio ||
+              `A safe and private support space with ${item.user?.displayName || 'this host'}.`,
+            bio: item.bio || '',
+            category: item.category || null,
+            age: item.age || null,
+            languages: Array.isArray(item.languages) ? item.languages : [],
+            price: `${callRate}/min`,
+            avatar: avatarUrl,
+            profileImageUrl: avatarUrl,
+            isOnline: up(item.availability) === 'ONLINE',
+            chatRatePerMinute: Number(item.chatRatePerMinute || callRate),
+            callRatePerMinute: callRate,
+          };
+        }),
+    [hostsQuery.data?.items],
+  );
 
   const normalizedSearchQuery = useMemo(
     () =>
@@ -194,6 +237,21 @@ const HomeScreen = ({ navigation }) => {
       error.code = reasonCode;
       throw error;
     }
+  }, []);
+
+  const openHostPreviewCard = useCallback((host) => {
+    if (!host) {
+      return;
+    }
+
+    if (AUTH_DEBUG_ENABLED) {
+      console.log('[HomeScreen] profileOpen', {
+        source: 'host_card_avatar',
+        listenerId: host.listenerId || host.id || null,
+      });
+    }
+
+    setPreviewHost(host);
   }, []);
 
   const openCall = async (host) => {
@@ -292,7 +350,18 @@ const HomeScreen = ({ navigation }) => {
     if (item?.type !== 'chat') {
       return Alert.alert('Call history', item?.preview || 'Call activity updated.');
     }
-    const host = { name: item?.participant?.name || 'Conversation', avatar: img(item?.participant?.profileImageUrl), listenerId: item?.session?.listenerId || null, userId: item?.participant?.id || null, isOnline: up(item?.status) === 'ACTIVE' };
+    const host = {
+      name: item?.participant?.name || 'Conversation',
+      avatar: resolveAvatarUri({
+        profileImageUrl: item?.participant?.profileImageUrl || null,
+        id: item?.participant?.id || item?.session?.listenerId || null,
+        userId: item?.participant?.id || item?.session?.listenerId || null,
+        name: item?.participant?.name || null,
+      }),
+      listenerId: item?.session?.listenerId || null,
+      userId: item?.participant?.id || null,
+      isOnline: up(item?.status) === 'ACTIVE',
+    };
     return navigation.navigate('ChatSession', { chatPayload: { session: item.session, agora: null }, host });
   };
 
@@ -408,6 +477,7 @@ const HomeScreen = ({ navigation }) => {
                     name={story.name}
                     online={story.isOnline}
                     image={story.avatar}
+                    avatarSeedId={story.listenerId || story.id}
                     onPress={() =>
                       navigation.navigate('Profile', {
                         profileMode: 'counterparty',
@@ -433,8 +503,20 @@ const HomeScreen = ({ navigation }) => {
               <Text style={styles.sectionTitle}>Available Verified Hosts</Text>
               {hostsQuery.isLoading && !hostsQuery.data ? <View style={styles.stateCard}><Text style={styles.stateText}>Loading live hosts...</Text></View> : null}
               {hostsQuery.isError && !hostsQuery.data ? <View style={styles.errorCard}><Text style={styles.errorTitle}>Unable to load live data.</Text><TouchableOpacity style={styles.smallBtn} onPress={refreshLiveData}><Text style={styles.smallBtnText}>Retry</Text></TouchableOpacity></View> : null}
-              {!hostsQuery.isLoading && !hostsQuery.isError && !filteredHosts.length ? <View style={styles.stateCard}><Text style={styles.stateText}>{normalizedSearchQuery ? 'No hosts match your search.' : 'No available hosts right now.'}</Text></View> : null}
-              {!hostsQuery.isLoading && !hostsQuery.isError ? filteredHosts.slice(0, 6).map((person) => <SupportCard key={person.id} person={person} talkDisabled={!person.isOnline} chatDisabled={!person.isOnline} onTalkPress={() => openCall(person)} onChatPress={() => openChat(person)} />) : null}
+                              {!hostsQuery.isLoading && !hostsQuery.isError && !filteredHosts.length ? <View style={styles.stateCard}><Text style={styles.stateText}>{normalizedSearchQuery ? 'No hosts match your search.' : 'No available hosts right now.'}</Text></View> : null}
+              {!hostsQuery.isLoading && !hostsQuery.isError
+                ? filteredHosts.slice(0, 6).map((person) => (
+                    <SupportCard
+                      key={person.id}
+                      person={person}
+                      talkDisabled={!person.isOnline}
+                      chatDisabled={!person.isOnline}
+                      onAvatarPress={() => openHostPreviewCard(person)}
+                      onTalkPress={() => openCall(person)}
+                      onChatPress={() => openChat(person)}
+                    />
+                  ))
+                : null}
             </>
           ) : (
             <View style={styles.inboxWrap}>
@@ -444,7 +526,15 @@ const HomeScreen = ({ navigation }) => {
               {filteredInboxItems.map((item) => (
                 <TouchableOpacity key={item.id} style={styles.inboxRow} activeOpacity={0.88} onPress={() => openInboxItem(item)}>
                   <View style={styles.inboxAvatarWrap}>
-                    <Image source={img(item?.participant?.profileImageUrl)} style={styles.inboxAvatar} />
+                    <Image
+                      source={resolveAvatarSource({
+                        profileImageUrl: item?.participant?.profileImageUrl || null,
+                        id: item?.participant?.id || item?.session?.listenerId || null,
+                        userId: item?.participant?.id || item?.session?.listenerId || null,
+                        name: item?.participant?.name || null,
+                      })}
+                      style={styles.inboxAvatar}
+                    />
                     <View style={[styles.dot, up(item?.status) === 'ACTIVE' ? styles.dotOn : styles.dotOff]} />
                   </View>
                   <View style={{ flex: 1 }}>
@@ -463,6 +553,25 @@ const HomeScreen = ({ navigation }) => {
           )}
         </ScrollView>
       </SafeAreaView>
+      <HostPreviewModal
+        visible={Boolean(previewHost)}
+        host={previewHost}
+        onClose={() => setPreviewHost(null)}
+        onChatNow={() => {
+          const selectedHost = previewHost;
+          setPreviewHost(null);
+          if (selectedHost) {
+            openChat(selectedHost);
+          }
+        }}
+        onTalkNow={() => {
+          const selectedHost = previewHost;
+          setPreviewHost(null);
+          if (selectedHost) {
+            openCall(selectedHost);
+          }
+        }}
+      />
       <BottomSheetAnonymous visible={showAnonymousModal} onClose={() => setShowAnonymousModal(false)} />
     </LinearGradient>
   );
@@ -488,7 +597,7 @@ const styles = StyleSheet.create({
   sectionTitle: { color: theme.colors.textPrimary, fontSize: 16, fontWeight: '700', marginBottom: 8 }, stateCard: { borderRadius: 18, borderWidth: 1, borderColor: theme.colors.borderSoft, backgroundColor: 'rgba(255,255,255,0.06)', paddingVertical: 20, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }, stateText: { color: theme.colors.textSecondary, fontSize: 14 },
   errorCard: { borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,85,96,0.4)', backgroundColor: 'rgba(255,85,96,0.08)', paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }, errorTitle: { color: theme.colors.textPrimary, fontSize: 14, fontWeight: '700' }, smallBtn: { alignSelf: 'flex-start', marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.borderPink, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: 'rgba(255,42,163,0.18)' }, smallBtnText: { color: theme.colors.textPrimary, fontWeight: '700', fontSize: 12 },
   inboxWrap: { marginTop: 14, gap: 12 }, emptyCard: { borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,42,163,0.25)', backgroundColor: 'rgba(24,13,35,0.92)', paddingHorizontal: 18, paddingVertical: 28 }, emptyTitle: { color: theme.colors.textPrimary, fontSize: 18, fontWeight: '700' }, emptySub: { marginTop: 8, color: theme.colors.textSecondary, fontSize: 13, lineHeight: 20 },
-  inboxRow: { borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(23,13,35,0.96)', paddingHorizontal: 14, paddingVertical: 13, flexDirection: 'row', alignItems: 'center' }, inboxAvatarWrap: { marginRight: 12 }, inboxAvatar: { width: 56, height: 56, borderRadius: 28, borderWidth: 1.5, borderColor: 'rgba(255,42,163,0.55)', backgroundColor: '#2A2137' },
+  inboxRow: { borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(23,13,35,0.96)', paddingHorizontal: 14, paddingVertical: 13, flexDirection: 'row', alignItems: 'center' }, inboxAvatarWrap: { marginRight: 12 }, inboxAvatar: { width: 60, height: 60, borderRadius: 30, borderWidth: 1.5, borderColor: 'rgba(255,42,163,0.55)', backgroundColor: '#2A2137' },
   dot: { position: 'absolute', right: 1, bottom: 1, width: 12, height: 12, borderRadius: 6, borderWidth: 2, borderColor: '#180B23' }, dotOn: { backgroundColor: theme.colors.success }, dotOff: { backgroundColor: 'rgba(255,255,255,0.26)' },
   inboxTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }, inboxBottom: { flexDirection: 'row', alignItems: 'center', marginTop: 6 }, inboxName: { flex: 1, color: theme.colors.textPrimary, fontSize: 17, fontWeight: '700' }, inboxTime: { color: theme.colors.textMuted, fontSize: 12, marginTop: 2 }, inboxPreview: { flex: 1, paddingRight: 12, color: theme.colors.textSecondary, fontSize: 13, lineHeight: 18 }, inboxPreviewUnread: { color: theme.colors.textPrimary },
   badge: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 7, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,42,163,0.92)' }, badgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },

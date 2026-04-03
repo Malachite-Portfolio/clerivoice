@@ -16,17 +16,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import theme from '../constants/theme';
+import HostPreviewModal from '../components/HostPreviewModal';
 import { useAuth } from '../context/AuthContext';
 import { resetToAuthEntry } from '../navigation/navigationRef';
 import { isUnauthorizedApiError } from '../services/apiClient';
+import { resolveAvatarSource, resolveAvatarUri } from '../services/avatarResolver';
 import { fetchHostAvailability, fetchHosts } from '../services/listenersApi';
 import { getChatSessions, getWalletSummary, requestCall, requestChat } from '../services/sessionApi';
 import { queryKeys } from '../services/queryClient';
 import { requestCallAudioPermissions } from '../services/audioPermissions';
 import { getCallStatusMessageByCode, getCallStatusMessageFromError } from '../services/callStatusMessage';
 import { isUserBlocked } from '../services/chatInteractionPrefs';
-
-const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 
 const hostQueryParams = {
   page: 1,
@@ -47,6 +47,7 @@ const isHostAvailableForListing = (item) => {
 const ChatCallHubScreen = ({ navigation }) => {
   const { session } = useAuth();
   const queryClient = useQueryClient();
+  const [previewHost, setPreviewHost] = React.useState(null);
 
   const hostsQuery = useQuery({
     queryKey: queryKeys.hosts.list(hostQueryParams),
@@ -95,17 +96,40 @@ const ChatCallHubScreen = ({ navigation }) => {
     () =>
       hosts.map((item) => ({
         listenerId: item.userId,
+        id: item.userId,
         name: item.user?.displayName || 'Support Host',
         callRate: Number(item.callRatePerMinute || 0),
         chatRate: Number(item.chatRatePerMinute || 0),
+        callRatePerMinute: Number(item.callRatePerMinute || 0),
+        chatRatePerMinute: Number(item.chatRatePerMinute || 0),
         availability: item.availability || 'OFFLINE',
-        avatar: item.user?.profileImageUrl ? { uri: item.user.profileImageUrl } : avatarPlaceholder,
+        avatar: resolveAvatarUri({
+          uploadedImageUrl: item?.user?.uploadedProfileImageUrl || null,
+          profileImageUrl: item?.user?.profileImageUrl || null,
+          id: item.userId,
+          userId: item.userId,
+          name: item.user?.displayName || null,
+          role: 'LISTENER',
+        }),
+        profileImageUrl: item?.user?.profileImageUrl || null,
         isOnline: String(item.availability || '').toUpperCase() === 'ONLINE',
         experienceYears: item.experienceYears || 0,
+        experience: `${item.experienceYears || 0}+ yrs exp`,
+        category: item.category || null,
+        bio: item.bio || '',
         rating: Number(item.rating || 0),
+        reviewCount: Number(item.totalSessions || 0),
       })),
     [hosts],
   );
+
+  const openHostPreviewCard = useCallback((host) => {
+    if (!host) {
+      return;
+    }
+
+    setPreviewHost(host);
+  }, []);
 
   const validateHostAvailability = useCallback(async (listenerId) => {
     const availability = await fetchHostAvailability(listenerId);
@@ -287,7 +311,23 @@ const ChatCallHubScreen = ({ navigation }) => {
             ? liveHosts.map((host) => (
                 <View key={host.listenerId} style={styles.hostCard}>
                   <View style={styles.hostTopRow}>
-                    <Image source={host.avatar} style={styles.avatar} />
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => openHostPreviewCard(host)}
+                      style={styles.avatarPressArea}
+                    >
+                      <Image
+                        source={resolveAvatarSource({
+                          avatarUrl: host.avatar,
+                          profileImageUrl: host.profileImageUrl,
+                          id: host.listenerId,
+                          userId: host.listenerId,
+                          name: host.name,
+                          role: 'LISTENER',
+                        })}
+                        style={styles.avatar}
+                      />
+                    </TouchableOpacity>
                     <View style={styles.hostInfo}>
                       <Text style={styles.hostName}>{host.name}</Text>
                       <Text style={styles.hostMeta}>
@@ -330,6 +370,25 @@ const ChatCallHubScreen = ({ navigation }) => {
             : null}
         </ScrollView>
       </SafeAreaView>
+      <HostPreviewModal
+        visible={Boolean(previewHost)}
+        host={previewHost}
+        onClose={() => setPreviewHost(null)}
+        onChatNow={() => {
+          const selectedHost = previewHost;
+          setPreviewHost(null);
+          if (selectedHost) {
+            openChat(selectedHost);
+          }
+        }}
+        onTalkNow={() => {
+          const selectedHost = previewHost;
+          setPreviewHost(null);
+          if (selectedHost) {
+            openCall(selectedHost);
+          }
+        }}
+      />
     </LinearGradient>
   );
 };
@@ -474,15 +533,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  avatarPressArea: {
+    marginRight: 10,
+  },
   avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 66,
+    height: 66,
+    borderRadius: 33,
     borderWidth: 1.5,
     borderColor: theme.colors.magenta,
   },
   hostInfo: {
-    marginLeft: 10,
     flex: 1,
   },
   hostName: {

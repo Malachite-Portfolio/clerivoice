@@ -18,6 +18,7 @@ import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
 import { getAuthEntryRouteName } from '../navigation/navigationRef';
 import { isUnauthorizedApiError } from '../services/apiClient';
+import { resolveAvatarSource, resolveAvatarUri } from '../services/avatarResolver';
 import {
   fetchListenerDashboard,
   fetchMyCallSessions,
@@ -31,8 +32,6 @@ import {
 import { queryKeys } from '../services/queryClient';
 import { getInboxItems } from '../services/sessionApi';
 import { fetchWalletHistory } from '../services/walletApi';
-
-const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 
 const TABS = ['Dashboard', 'Chats', 'Calls', 'Earnings'];
 
@@ -72,8 +71,6 @@ const formatDuration = (seconds) => {
   return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
 };
 
-const imageSource = (uri) => (uri ? { uri } : avatarPlaceholder);
-
 const logListenerDebug = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
     return;
@@ -92,8 +89,23 @@ const ListenerHomeScreen = ({ navigation }) => {
 
   const listenerName = session?.user?.displayName || 'Listener';
   const listenerAvatarSource = useMemo(
-    () => imageSource(session?.user?.profileImageUrl),
-    [session?.user?.profileImageUrl],
+    () =>
+      resolveAvatarSource({
+        uploadedImageUrl: session?.user?.uploadedProfileImageUrl || null,
+        profileImageUrl: session?.user?.profileImageUrl || null,
+        id: session?.user?.id || null,
+        phone: session?.user?.phone || null,
+        name: session?.user?.displayName || null,
+        role: session?.user?.role || null,
+      }),
+    [
+      session?.user?.displayName,
+      session?.user?.id,
+      session?.user?.phone,
+      session?.user?.profileImageUrl,
+      session?.user?.role,
+      session?.user?.uploadedProfileImageUrl,
+    ],
   );
 
   const dashboardQuery = useQuery({
@@ -302,7 +314,13 @@ const ListenerHomeScreen = ({ navigation }) => {
       },
       host: {
         name: item?.participant?.name || 'Conversation',
-        avatar: item?.participant?.profileImageUrl || null,
+        avatar: resolveAvatarUri({
+          profileImageUrl: item?.participant?.profileImageUrl || null,
+          id: item?.participant?.id || item?.session?.userId || null,
+          userId: item?.participant?.id || item?.session?.userId || null,
+          name: item?.participant?.name || null,
+          role: 'USER',
+        }),
         userId: item?.participant?.id || item?.session?.userId || null,
         listenerId: item?.session?.listenerId || null,
       },
@@ -330,7 +348,14 @@ const ListenerHomeScreen = ({ navigation }) => {
       },
       host: {
         name: item?.user?.displayName || sessionRecord?.user?.displayName || 'User',
-        avatar: item?.user?.profileImageUrl || sessionRecord?.user?.profileImageUrl || null,
+        avatar: resolveAvatarUri({
+          profileImageUrl:
+            item?.user?.profileImageUrl || sessionRecord?.user?.profileImageUrl || null,
+          id: item?.user?.id || sessionRecord?.user?.id || sessionRecord?.userId || null,
+          userId: item?.user?.id || sessionRecord?.user?.id || sessionRecord?.userId || null,
+          name: item?.user?.displayName || sessionRecord?.user?.displayName || null,
+          role: 'USER',
+        }),
         userId: item?.user?.id || sessionRecord?.user?.id || sessionRecord?.userId || null,
       },
     });
@@ -475,7 +500,13 @@ const ListenerHomeScreen = ({ navigation }) => {
             activeOpacity={0.85}
           >
             <Image
-              source={imageSource(item?.participant?.profileImageUrl)}
+              source={resolveAvatarSource({
+                profileImageUrl: item?.participant?.profileImageUrl || null,
+                id: item?.participant?.id || item?.session?.userId || null,
+                userId: item?.participant?.id || item?.session?.userId || null,
+                name: item?.participant?.name || null,
+                role: 'USER',
+              })}
               style={styles.requestAvatar}
             />
             <View style={{ flex: 1 }}>

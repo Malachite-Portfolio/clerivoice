@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   Modal,
@@ -11,14 +12,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { resolveAvatarSource } from '../services/avatarResolver';
 import { isUnauthorizedApiError } from '../services/apiClient';
-import { getMyProfile, updateMyProfile } from '../services/profileApi';
-
-const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
+import { getMyProfile, updateMyProfile, uploadMyProfileAvatar } from '../services/profileApi';
 
 const logProfileDebug = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
@@ -28,6 +29,28 @@ const logProfileDebug = (label, payload) => {
   console.log(`[ProfileScreen] ${label}`, payload);
 };
 
+const MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_PROFILE_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+]);
+
+const normalizeImageMimeType = (asset = {}) =>
+  String(asset?.mimeType || asset?.type || '')
+    .trim()
+    .toLowerCase();
+
+const isAllowedProfileImage = (asset = {}) => {
+  const mimeType = normalizeImageMimeType(asset);
+  if (!mimeType) {
+    return true;
+  }
+
+  return ALLOWED_PROFILE_IMAGE_MIME_TYPES.has(mimeType);
+};
+
 const ProfileScreen = ({ navigation, route }) => {
   const { session, setSession } = useAuth();
   const profileMode = String(route?.params?.profileMode || 'self').trim().toLowerCase();
@@ -35,6 +58,7 @@ const ProfileScreen = ({ navigation, route }) => {
   const showExternalProfile = profileMode === 'counterparty' && Boolean(externalProfile);
   const [selfProfile, setSelfProfile] = useState(session?.user || null);
   const [avatarInput, setAvatarInput] = useState('');
+  const [selectedImageAsset, setSelectedImageAsset] = useState(null);
   const [isEditorVisible, setIsEditorVisible] = useState(false);
   const [isSavingAvatar, setIsSavingAvatar] = useState(false);
 
@@ -107,16 +131,30 @@ const ProfileScreen = ({ navigation, route }) => {
   const displayName = showExternalProfile
     ? externalProfile?.name || 'Profile'
     : selfProfile?.displayName || session?.user?.displayName || 'Anonymous';
-  const selfAvatarUrl = String(selfProfile?.profileImageUrl || session?.user?.profileImageUrl || '')
-    .trim();
-  const avatarSource =
-    showExternalProfile &&
-    typeof externalProfile?.avatar === 'string' &&
-    externalProfile.avatar.trim()
-      ? { uri: externalProfile.avatar.trim() }
-      : selfAvatarUrl
-        ? { uri: selfAvatarUrl }
-      : avatarPlaceholder;
+  const selfAvatarUrl = String(
+    selfProfile?.profileImageUrl || session?.user?.profileImageUrl || '',
+  ).trim();
+  const activePreviewAvatarSource = selectedImageAsset?.uri
+    ? { uri: selectedImageAsset.uri }
+    : null;
+  const avatarSource = activePreviewAvatarSource
+    ? activePreviewAvatarSource
+    : resolveAvatarSource({
+        avatarUrl:
+          (showExternalProfile ? externalProfile?.avatar || null : null) || selfAvatarUrl || null,
+        profileImageUrl: selfAvatarUrl || null,
+        id: showExternalProfile
+          ? externalProfile?.id || null
+          : selfProfile?.id || session?.user?.id || null,
+        userId: showExternalProfile
+          ? externalProfile?.id || null
+          : selfProfile?.id || session?.user?.id || null,
+        phone: showExternalProfile
+          ? externalProfile?.phone || null
+          : selfProfile?.phone || session?.user?.phone || null,
+        name: displayName,
+        role: showExternalProfile ? externalProfile?.role || null : session?.user?.role || null,
+      });
   const phoneLabel = showExternalProfile
     ? externalProfile?.phone || 'Private profile'
     : selfProfile?.phone || session?.user?.phone || '+91 0000000000';
@@ -126,6 +164,7 @@ const ProfileScreen = ({ navigation, route }) => {
 
   const onOpenAvatarEditor = useCallback(() => {
     setAvatarInput(selfAvatarUrl || '');
+    setSelectedImageAsset(null);
     setIsEditorVisible(true);
     logProfileDebug('avatarEditorOpened', {
       hasExistingAvatar: Boolean(selfAvatarUrl),
@@ -137,35 +176,134 @@ const ProfileScreen = ({ navigation, route }) => {
     if (isSavingAvatar) {
       return;
     }
+    setSelectedImageAsset(null);
     setIsEditorVisible(false);
   }, [isSavingAvatar]);
 
+  const applySelectedImageAsset = useCallback((asset) => {
+    if (!asset?.uri) {
+      return false;
+    }
+
+    const fileSize = Number(asset?.fileSize || 0);
+    if (fileSize > MAX_PROFILE_IMAGE_BYTES) {
+      Alert.alert('Image too large', 'Please select an image smaller than 5 MB.');
+      return false;
+    }
+
+    if (!isAllowedProfileImage(asset)) {
+      Alert.alert('Unsupported image', 'Please use JPG, PNG, or WEBP image.');
+      return false;
+    }
+
+    setSelectedImageAsset(asset);
+    setAvatarInput('');
+    logProfileDebug('avatarPickerAssetSelected', {
+      mimeType: normalizeImageMimeType(asset) || null,
+      fileSize: Number(asset?.fileSize || 0) || null,
+    });
+    return true;
+  }, []);
+
+  const pickImageFromLibrary = useCallback(async () => {
+    try {
+      const permissionResult =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult?.granted) {
+        Alert.alert(
+          'Gallery permission needed',
+          'Allow photo library access to upload your profile picture.',
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+
+      if (result?.canceled) {
+        return;
+      }
+
+      const asset = result?.assets?.[0] || null;
+      applySelectedImageAsset(asset);
+    } catch (error) {
+      logProfileDebug('avatarPickerLibraryFailure', {
+        message: error?.message || 'Unknown error',
+      });
+      Alert.alert('Unable to open gallery', 'Please try again.');
+    }
+  }, [applySelectedImageAsset]);
+
+  const pickImageFromCamera = useCallback(async () => {
+    try {
+      const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permissionResult?.granted) {
+        Alert.alert(
+          'Camera permission needed',
+          'Allow camera access to capture your profile picture.',
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+
+      if (result?.canceled) {
+        return;
+      }
+
+      const asset = result?.assets?.[0] || null;
+      applySelectedImageAsset(asset);
+    } catch (error) {
+      logProfileDebug('avatarPickerCameraFailure', {
+        message: error?.message || 'Unknown error',
+      });
+      Alert.alert('Unable to open camera', 'Please try again.');
+    }
+  }, [applySelectedImageAsset]);
+
   const onSaveAvatar = useCallback(async () => {
     const nextAvatarUrl = String(avatarInput || '').trim();
-    if (!nextAvatarUrl) {
-      Alert.alert('Avatar required', 'Please enter a valid image URL.');
+
+    if (!selectedImageAsset && !nextAvatarUrl) {
+      Alert.alert(
+        'Profile picture required',
+        'Please choose an image from device or enter an image URL.',
+      );
       return;
     }
 
-    try {
-      // Validate URL input before API call.
-      // eslint-disable-next-line no-new
-      new URL(nextAvatarUrl);
-    } catch (_error) {
-      Alert.alert('Invalid URL', 'Please enter a valid image URL.');
-      return;
+    if (!selectedImageAsset && nextAvatarUrl) {
+      try {
+        // Validate URL input before API call.
+        // eslint-disable-next-line no-new
+        new URL(nextAvatarUrl);
+      } catch (_error) {
+        Alert.alert('Invalid URL', 'Please enter a valid image URL.');
+        return;
+      }
     }
 
     setIsSavingAvatar(true);
     logProfileDebug('profileUpdateStart', {
       role: roleLabel,
+      hasSelectedImage: Boolean(selectedImageAsset?.uri),
       hasAvatarUrl: Boolean(nextAvatarUrl),
     });
 
     try {
-      const updatedProfile = await updateMyProfile({
-        profileImageUrl: nextAvatarUrl,
-      });
+      const updatedProfile = selectedImageAsset?.uri
+        ? await uploadMyProfileAvatar(selectedImageAsset)
+        : await updateMyProfile({
+            profileImageUrl: nextAvatarUrl,
+          });
 
       setSelfProfile(updatedProfile || selfProfile);
       await setSession({
@@ -173,14 +311,19 @@ const ProfileScreen = ({ navigation, route }) => {
         user: {
           ...(session?.user || {}),
           ...(updatedProfile || {}),
-          profileImageUrl: updatedProfile?.profileImageUrl || nextAvatarUrl,
+          profileImageUrl:
+            updatedProfile?.profileImageUrl ||
+            selectedImageAsset?.uri ||
+            nextAvatarUrl,
         },
       });
 
+      setSelectedImageAsset(null);
       setIsEditorVisible(false);
       Alert.alert('Profile updated', 'Your profile picture has been updated.');
       logProfileDebug('profileUpdateSuccess', {
         role: roleLabel,
+        uploadType: selectedImageAsset?.uri ? 'device_upload' : 'url_update',
       });
     } catch (error) {
       logProfileDebug('profileUpdateFailure', {
@@ -196,7 +339,7 @@ const ProfileScreen = ({ navigation, route }) => {
     } finally {
       setIsSavingAvatar(false);
     }
-  }, [avatarInput, roleLabel, selfProfile, session, setSession]);
+  }, [avatarInput, roleLabel, selectedImageAsset, selfProfile, session, setSession]);
 
   return (
     <LinearGradient colors={theme.gradients.bg} style={styles.container}>
@@ -258,17 +401,50 @@ const ProfileScreen = ({ navigation, route }) => {
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Update Profile Picture</Text>
-              <Text style={styles.modalSubtitle}>Paste an image URL for your host avatar.</Text>
+              <Text style={styles.modalSubtitle}>
+                Choose from gallery/camera, or use an image URL.
+              </Text>
+
+              <View style={styles.modalPreviewWrap}>
+                <Image source={avatarSource} style={styles.modalPreviewAvatar} />
+              </View>
+
+              <View style={styles.pickerActionRow}>
+                <TouchableOpacity
+                  style={styles.pickerBtn}
+                  onPress={pickImageFromLibrary}
+                  activeOpacity={0.85}
+                  disabled={isSavingAvatar}
+                >
+                  <Ionicons name="images-outline" size={14} color={theme.colors.textPrimary} />
+                  <Text style={styles.pickerBtnText}>Gallery</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.pickerBtn}
+                  onPress={pickImageFromCamera}
+                  activeOpacity={0.85}
+                  disabled={isSavingAvatar}
+                >
+                  <Ionicons name="camera-outline" size={14} color={theme.colors.textPrimary} />
+                  <Text style={styles.pickerBtnText}>Camera</Text>
+                </TouchableOpacity>
+              </View>
+
               <TextInput
                 value={avatarInput}
                 onChangeText={setAvatarInput}
-                placeholder="https://example.com/avatar.jpg"
+                placeholder="Optional: https://example.com/avatar.jpg"
                 placeholderTextColor={theme.colors.textMuted}
                 style={styles.modalInput}
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={!isSavingAvatar}
               />
+              <Text style={styles.modalHint}>
+                {selectedImageAsset?.uri
+                  ? 'Device image selected. Save to upload it now.'
+                  : 'URL is optional. Device upload is preferred.'}
+              </Text>
               <View style={styles.modalActions}>
                 <TouchableOpacity
                   style={styles.modalBtnSecondary}
@@ -292,6 +468,12 @@ const ProfileScreen = ({ navigation, route }) => {
                   </Text>
                 </TouchableOpacity>
               </View>
+              {isSavingAvatar ? (
+                <View style={styles.modalLoaderRow}>
+                  <ActivityIndicator size="small" color={theme.colors.magenta} />
+                  <Text style={styles.modalLoaderText}>Uploading profile image...</Text>
+                </View>
+              ) : null}
             </View>
           </View>
         </Modal>
@@ -422,6 +604,41 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
+  modalPreviewWrap: {
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  modalPreviewAvatar: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    borderWidth: 2,
+    borderColor: theme.colors.magenta,
+    backgroundColor: '#251B33',
+  },
+  pickerActionRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  pickerBtn: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  pickerBtnText: {
+    color: theme.colors.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   modalInput: {
     marginTop: 12,
     borderRadius: 12,
@@ -432,6 +649,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 13,
+  },
+  modalHint: {
+    marginTop: 8,
+    color: theme.colors.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
   },
   modalActions: {
     marginTop: 14,
@@ -467,6 +690,16 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: 12,
     fontWeight: '700',
+  },
+  modalLoaderRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modalLoaderText: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
   },
 });
 

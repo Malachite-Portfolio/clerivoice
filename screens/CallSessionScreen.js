@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { useCallSession } from '../context/CallSessionContext';
 import { resetToAuthEntry } from '../navigation/navigationRef';
 import { isUnauthorizedApiError } from '../services/apiClient';
+import { resolveAvatarSource } from '../services/avatarResolver';
 import { endDemoCallSession } from '../services/demoMode';
 import { startIncomingRingtone, stopIncomingRingtone } from '../services/incomingRingtoneService';
 import { rejectCallRequest } from '../services/listenerApi';
@@ -51,8 +52,6 @@ const VideoSourceType = agoraRtcUiModule?.VideoSourceType || {
 const RtcSurfaceView = agoraRtcUiModule?.RtcSurfaceView || null;
 const hasAgoraRtcSurfaceView = Boolean(RtcSurfaceView);
 
-const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
-const src = (v) => (typeof v === 'string' ? { uri: v } : v || avatarPlaceholder);
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 const activeControlIconColor = '#08040F';
 const normalizeCallType = (value) =>
@@ -147,7 +146,27 @@ const CallSessionScreen = ({ navigation, route }) => {
   const callTypeRef = useRef(resolvedCallType);
 
   const displayName = useMemo(() => host?.name || incomingRequest?.requester?.displayName || 'Support Host', [host?.name, incomingRequest?.requester?.displayName]);
-  const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
+  const avatar = useMemo(
+    () =>
+      resolveAvatarSource({
+        avatarUrl: host?.avatar || null,
+        profileImageUrl: host?.profileImageUrl || null,
+        id: host?.userId || host?.listenerId || incomingRequest?.requester?.id || null,
+        userId: host?.userId || host?.listenerId || incomingRequest?.requester?.id || null,
+        name: host?.name || incomingRequest?.requester?.displayName || null,
+        role: isListener ? 'USER' : 'LISTENER',
+      }),
+    [
+      host?.avatar,
+      host?.listenerId,
+      host?.name,
+      host?.profileImageUrl,
+      host?.userId,
+      incomingRequest?.requester?.displayName,
+      incomingRequest?.requester?.id,
+      isListener,
+    ],
+  );
   const callMode =
     incomingRequest && !runtimePayload ? 'incoming' : isCallConnected ? 'active' : 'outgoing';
   const showVideoSurfaces = isVideoCall && callMode !== 'incoming' && !isDemoSession;

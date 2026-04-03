@@ -22,10 +22,9 @@ import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { getAuthEntryRouteName } from './navigationRef';
 import AppLogo from '../components/AppLogo';
+import { resolveAvatarSource } from '../services/avatarResolver';
 
 const Drawer = createDrawerNavigator();
-const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
-
 const sectionBreaks = {
   refer: 'Only for you',
   care: 'Communicate',
@@ -33,9 +32,14 @@ const sectionBreaks = {
 
 const CustomDrawerContent = ({ navigation }) => {
   const { session, logout } = useAuth();
-  const avatarSource = String(session?.user?.profileImageUrl || '').trim()
-    ? { uri: String(session?.user?.profileImageUrl || '').trim() }
-    : avatarPlaceholder;
+  const avatarSource = resolveAvatarSource({
+    uploadedImageUrl: session?.user?.uploadedProfileImageUrl || null,
+    profileImageUrl: session?.user?.profileImageUrl || null,
+    id: session?.user?.id || null,
+    phone: session?.user?.phone || null,
+    name: session?.user?.displayName || null,
+    role: session?.user?.role || null,
+  });
 
   const navigateToRoute = (routeName) => {
     const parentNavigation = navigation.getParent();

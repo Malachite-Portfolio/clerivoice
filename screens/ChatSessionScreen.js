@@ -9,6 +9,7 @@ import { AGORA_CHAT_APP_KEY, AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
 import { resetToAuthEntry } from '../navigation/navigationRef';
 import { apiClient, isUnauthorizedApiError } from '../services/apiClient';
+import { resolveAvatarSource, resolveAvatarUri } from '../services/avatarResolver';
 import { addDemoChatMessage, addDemoChatReply } from '../services/demoMode';
 import { connectRealtimeSocket, emitWithAck, getRealtimeSocket } from '../services/realtimeSocket';
 import {
@@ -30,9 +31,7 @@ import {
   setUserBlocked,
 } from '../services/chatInteractionPrefs';
 
-const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const PATTERN = [{ t: 20, l: 24, s: 54 }, { t: 110, l: 180, s: 28 }, { t: 160, l: 42, s: 16 }, { t: 280, l: 220, s: 44 }, { t: 380, l: 70, s: 24 }, { t: 460, l: 200, s: 18 }, { t: 520, l: 18, s: 60 }, { t: 620, l: 190, s: 26 }];
-const src = (v) => (typeof v === 'string' ? { uri: v } : v || avatarPlaceholder);
 const time = (v) => new Date(v || Date.now()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const duration = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 
@@ -144,7 +143,18 @@ const ChatSessionScreen = ({ navigation, route }) => {
   );
 
   const title = useMemo(() => host?.name || 'Conversation', [host?.name]);
-  const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
+  const avatar = useMemo(
+    () =>
+      resolveAvatarSource({
+        avatarUrl: host?.avatar || null,
+        profileImageUrl: host?.profileImageUrl || null,
+        id: host?.userId || host?.listenerId || null,
+        userId: host?.userId || host?.listenerId || null,
+        name: host?.name || null,
+        role: isListener ? 'USER' : 'LISTENER',
+      }),
+    [host?.avatar, host?.listenerId, host?.name, host?.profileImageUrl, host?.userId, isListener],
+  );
   const listenerId = payload?.session?.listenerId || host?.listenerId || null;
   const counterpartyUserId = useMemo(
     () =>
@@ -1046,7 +1056,14 @@ const ChatSessionScreen = ({ navigation, route }) => {
     const profileData = {
       id: counterpartyUserId || null,
       name: host?.name || 'Profile',
-      avatar: host?.avatar || host?.profileImageUrl || null,
+      avatar: resolveAvatarUri({
+        avatarUrl: host?.avatar || null,
+        profileImageUrl: host?.profileImageUrl || null,
+        id: counterpartyUserId || host?.userId || host?.listenerId || null,
+        userId: counterpartyUserId || host?.userId || host?.listenerId || null,
+        name: host?.name || null,
+        role: isListener ? 'USER' : 'LISTENER',
+      }),
       role: isListener ? 'USER' : 'LISTENER',
       availability: counterpartyPresence,
       source: 'chat_header',
@@ -1083,8 +1100,10 @@ const ChatSessionScreen = ({ navigation, route }) => {
     counterpartyPresence,
     counterpartyUserId,
     host?.avatar,
+    host?.listenerId,
     host?.name,
     host?.profileImageUrl,
+    host?.userId,
     isListener,
     navigation,
     sessionId,

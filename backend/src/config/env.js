@@ -72,6 +72,7 @@ const envSchema = z.object({
     .default('true')
     .transform((value) => value.toLowerCase() === 'true'),
   EXPO_PUSH_ACCESS_TOKEN: z.string().optional(),
+  PROFILE_IMAGE_PUBLIC_BASE_URL: z.string().optional(),
 
   MIN_CHAT_START_BALANCE: z.coerce.number().default(20),
   MIN_CALL_START_BALANCE: z.coerce.number().default(30),

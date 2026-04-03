@@ -62,6 +62,7 @@ export const EXPO_PUSH_PROJECT_ID = expoPushProjectIdValue;
 export const API_ENDPOINTS = {
   profile: {
     me: '/me',
+    uploadAvatar: '/me/avatar/upload',
   },
   listeners: {
     list: '/listeners',

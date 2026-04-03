@@ -9,16 +9,25 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
+import { resolveAvatarSource } from '../services/avatarResolver';
 
 const SupportCard = ({
   person,
   onTalkPress,
   onChatPress,
+  onAvatarPress,
   talkDisabled = false,
   chatDisabled = false,
 }) => {
-  const avatarSource =
-    typeof person.avatar === 'string' ? { uri: person.avatar } : person.avatar;
+  const avatarSource = resolveAvatarSource({
+    avatarUrl: person?.avatar,
+    profileImageUrl: person?.profileImageUrl,
+    id: person?.listenerId || person?.id,
+    userId: person?.listenerId || person?.id,
+    name: person?.name,
+    role: 'LISTENER',
+  });
+  const ratingLabel = Number(person?.rating || 0) > 0 ? Number(person?.rating || 0).toFixed(1) : '4.8';
 
   return (
     <LinearGradient
@@ -28,10 +37,15 @@ const SupportCard = ({
       style={styles.card}
     >
       <View style={styles.topRow}>
-        <View style={styles.avatarShell}>
+        <TouchableOpacity
+          style={styles.avatarShell}
+          activeOpacity={onAvatarPress ? 0.85 : 1}
+          disabled={!onAvatarPress}
+          onPress={onAvatarPress}
+        >
           <Image source={avatarSource} style={styles.avatar} />
           {person.isOnline ? <View style={styles.onlineDot} /> : null}
-        </View>
+        </TouchableOpacity>
 
         <View style={styles.infoWrap}>
           <View style={styles.nameRow}>
@@ -47,9 +61,9 @@ const SupportCard = ({
 
           <View style={styles.metaRow}>
             <Ionicons name="star" size={12} color={theme.colors.warning} />
-            <Text style={styles.metaText}>{person.rating.toFixed(1)}</Text>
-            <Text style={styles.metaText}>{person.age} yrs</Text>
-            <Text style={styles.metaText}>{person.experience}</Text>
+            <Text style={styles.metaText}>{ratingLabel}</Text>
+            {person?.age ? <Text style={styles.metaText}>{person.age} yrs</Text> : null}
+            {person?.experience ? <Text style={styles.metaText}>{person.experience}</Text> : null}
             {!person.isOnline ? (
               <Text style={[styles.metaText, styles.offlineText]}>Offline</Text>
             ) : null}
@@ -124,25 +138,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
   avatarShell: {
-    width: 70,
+    width: 88,
     marginRight: 10,
     alignItems: 'center',
   },
   avatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     borderWidth: 2,
     borderColor: theme.colors.magenta,
     backgroundColor: '#9FA471',
   },
   onlineDot: {
     position: 'absolute',
-    right: 6,
-    bottom: 2,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    right: 8,
+    bottom: 4,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
     backgroundColor: theme.colors.success,
     borderWidth: 2,
     borderColor: theme.colors.bgPrimary,
