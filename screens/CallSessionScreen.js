@@ -119,6 +119,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   const [isCameraEnabled, setIsCameraEnabled] = useState(isVideoCall);
   const [remoteVideoUid, setRemoteVideoUid] = useState(null);
   const [hasLocalVideoFrame, setHasLocalVideoFrame] = useState(false);
+  const [isLocalPreviewBound, setIsLocalPreviewBound] = useState(false);
   const [hasRemoteVideoFrame, setHasRemoteVideoFrame] = useState(false);
   const [isCallConnected, setIsCallConnected] = useState(false);
   const [lowBalanceWarning, setLowBalanceWarning] = useState('');
@@ -142,6 +143,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   const previousSessionIdRef = useRef(sessionId);
   const appStateRef = useRef(AppState.currentState || 'active');
   const localVideoBootstrapTimeoutRef = useRef(null);
+  const localPreviewFailureTimeoutRef = useRef(null);
   const [isResolvingIncoming, setIsResolvingIncoming] = useState(false);
   const callTypeRef = useRef(resolvedCallType);
 
@@ -178,12 +180,14 @@ const CallSessionScreen = ({ navigation, route }) => {
       hasRtcSurfaceView: hasAgoraRtcSurfaceView,
       nativeLoadError: hasAgoraRtcSurfaceView ? null : agoraRtcUiLoadError?.message || null,
       hasLocalVideoFrame,
+      isLocalPreviewBound,
       hasRemoteVideoFrame,
       remoteVideoUid,
       cameraEnabled: isCameraEnabled,
     });
   }, [
     hasLocalVideoFrame,
+    isLocalPreviewBound,
     hasRemoteVideoFrame,
     isCameraEnabled,
     remoteVideoUid,
@@ -266,6 +270,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     if (!isVideoCall) {
       setIsCameraEnabled(false);
       setHasLocalVideoFrame(false);
+      setIsLocalPreviewBound(false);
       setHasRemoteVideoFrame(false);
       setRemoteVideoUid(null);
       return;
@@ -306,9 +311,14 @@ const CallSessionScreen = ({ navigation, route }) => {
     remoteUserJoinedRef.current = false;
     setCallConnectedState(false, 'session_changed_reset');
     setElapsedSeconds(0);
+    setIsLocalPreviewBound(false);
     if (callSyncTimeoutRef.current) {
       clearTimeout(callSyncTimeoutRef.current);
       callSyncTimeoutRef.current = null;
+    }
+    if (localPreviewFailureTimeoutRef.current) {
+      clearTimeout(localPreviewFailureTimeoutRef.current);
+      localPreviewFailureTimeoutRef.current = null;
     }
     logCallDebug('callSessionStateInitialized', {
       sessionId,
@@ -361,13 +371,20 @@ const CallSessionScreen = ({ navigation, route }) => {
     const resolvedStartedAt = startedAt || callStartedAtRef.current;
     setCallConnectedState(true, 'activate_connected_state');
     setStatusText('Connected');
+    logCallDebug('callConnected', {
+      sessionId,
+      startedAt: resolvedStartedAt || null,
+      backendMarkedActive: backendMarkedActiveRef.current,
+      rtcConnected: rtcConnectedRef.current,
+      remoteUserJoined: remoteUserJoinedRef.current,
+    });
     startTimer(
       resolvedStartedAt
         ? Math.max(0, Math.floor((Date.now() - new Date(resolvedStartedAt).getTime()) / 1000))
         : 0,
       'call_connected',
     );
-  }, [setCallConnectedState, startTimer]);
+  }, [sessionId, setCallConnectedState, startTimer]);
 
   const requestLocalVideoBootstrap = useCallback((reason = 'unknown', callType = callTypeRef.current) => {
     if (isDemoSession || normalizeCallType(callType) !== 'video') {
@@ -384,6 +401,16 @@ const CallSessionScreen = ({ navigation, route }) => {
       });
       setLocalVideoEnabled(true, {
         reason: `${reason}_${source}`,
+      });
+      setIsLocalPreviewBound(true);
+      logCallDebug('localPreviewBound', {
+        sessionId,
+        source: `${reason}_${source}`,
+      });
+      logCallDebug('localVideoTrackEnabled', {
+        sessionId,
+        source: `${reason}_${source}`,
+        enabled: true,
       });
     };
 
@@ -428,7 +455,12 @@ const CallSessionScreen = ({ navigation, route }) => {
       clearTimeout(localVideoBootstrapTimeoutRef.current);
       localVideoBootstrapTimeoutRef.current = null;
     }
+    if (localPreviewFailureTimeoutRef.current) {
+      clearTimeout(localPreviewFailureTimeoutRef.current);
+      localPreviewFailureTimeoutRef.current = null;
+    }
     setHasLocalVideoFrame(false);
+    setIsLocalPreviewBound(false);
     setHasRemoteVideoFrame(false);
     setRemoteVideoUid(null);
     setIsCameraEnabled(isVideoCall);
@@ -529,6 +561,12 @@ const CallSessionScreen = ({ navigation, route }) => {
         callType: activeCallType,
         source: 'joinAgoraIfNeeded',
       });
+      if (activeCallType === 'video') {
+        logCallDebug('localCameraInitStarted', {
+          sessionId,
+          source: 'joinAgoraIfNeeded',
+        });
+      }
       const permissionResult =
         activeCallType === 'video'
           ? await requestVideoCallPermissions()
@@ -605,12 +643,22 @@ const CallSessionScreen = ({ navigation, route }) => {
           });
           if (activeCallType === 'video') {
             setIsCameraEnabled(true);
+            setIsLocalPreviewBound(true);
+            logCallDebug('localPreviewBound', {
+              sessionId,
+              source: 'join_success',
+            });
             requestLocalVideoBootstrap('join_success_auto_enable', activeCallType);
             logCallDebug('videoEnabled', {
               sessionId,
               callType: activeCallType,
               enabled: true,
               source: 'join_success',
+            });
+            logCallDebug('localVideoTrackEnabled', {
+              sessionId,
+              source: 'join_success',
+              enabled: true,
             });
           } else {
             setIsCameraEnabled(false);
@@ -690,10 +738,18 @@ const CallSessionScreen = ({ navigation, route }) => {
           }
 
           setHasLocalVideoFrame(true);
+          setIsLocalPreviewBound(true);
           logCallDebug('localStreamSet', {
             sessionId,
             callType: activeCallType,
             hasLocalVideoFrame: true,
+          });
+          logCallDebug('localPreviewRenderSuccess', {
+            sessionId,
+            source: 'onFirstLocalVideoFrame',
+            width,
+            height,
+            elapsed,
           });
           logCallDebug('localPreviewStarted', {
             sessionId,
@@ -1144,6 +1200,11 @@ const CallSessionScreen = ({ navigation, route }) => {
       if (acceptedCallType === 'video') {
         setIsCameraEnabled(true);
         setHasLocalVideoFrame(false);
+        setIsLocalPreviewBound(true);
+        logCallDebug('localPreviewBound', {
+          sessionId,
+          source: 'call_accepted_event',
+        });
       }
       if (eventPayload?.callType) {
         setRuntimePayload((prev) =>
@@ -1322,6 +1383,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       joining: joiningAgoraRef.current,
       cameraEnabled: isCameraEnabled,
       hasLocalVideoFrame,
+      localPreviewBound: isLocalPreviewBound,
       localStreamState: hasLocalVideoFrame ? 'present' : 'absent',
     });
 
@@ -1340,8 +1402,60 @@ const CallSessionScreen = ({ navigation, route }) => {
     hasLocalVideoFrame,
     isCameraEnabled,
     isDemoSession,
+    isLocalPreviewBound,
     isVideoCall,
     requestLocalVideoBootstrap,
+    sessionId,
+    showVideoSurfaces,
+  ]);
+
+  useEffect(() => {
+    if (localPreviewFailureTimeoutRef.current) {
+      clearTimeout(localPreviewFailureTimeoutRef.current);
+      localPreviewFailureTimeoutRef.current = null;
+    }
+
+    if (
+      !isVideoCall ||
+      isDemoSession ||
+      !isCameraEnabled ||
+      !showVideoSurfaces ||
+      !hasJoinedAgoraRef.current ||
+      hasLocalVideoFrame
+    ) {
+      return undefined;
+    }
+
+    localPreviewFailureTimeoutRef.current = setTimeout(() => {
+      if (
+        sessionEndedRef.current ||
+        !isCameraEnabled ||
+        hasLocalVideoFrame ||
+        !hasJoinedAgoraRef.current
+      ) {
+        return;
+      }
+
+      logCallDebug('localPreviewRenderFailure', {
+        sessionId,
+        reason: 'first_local_frame_timeout',
+        cameraEnabled: isCameraEnabled,
+        localPreviewBound: isLocalPreviewBound,
+      });
+    }, 3500);
+
+    return () => {
+      if (localPreviewFailureTimeoutRef.current) {
+        clearTimeout(localPreviewFailureTimeoutRef.current);
+        localPreviewFailureTimeoutRef.current = null;
+      }
+    };
+  }, [
+    hasLocalVideoFrame,
+    isCameraEnabled,
+    isDemoSession,
+    isLocalPreviewBound,
+    isVideoCall,
     sessionId,
     showVideoSurfaces,
   ]);
@@ -1474,10 +1588,25 @@ const CallSessionScreen = ({ navigation, route }) => {
       hasJoined: hasJoinedAgoraRef.current,
     });
     setIsCameraEnabled(next);
+    if (!next) {
+      setHasLocalVideoFrame(false);
+      setIsLocalPreviewBound(false);
+    } else {
+      setIsLocalPreviewBound(true);
+      logCallDebug('localPreviewBound', {
+        sessionId,
+        source: 'camera_toggle_on',
+      });
+    }
 
     if (!isDemoSession) {
       setLocalVideoEnabled(next, {
         reason: 'toggle_from_call_screen',
+      });
+      logCallDebug('localVideoTrackEnabled', {
+        sessionId,
+        source: 'camera_toggle_button',
+        enabled: next,
       });
     }
   };
@@ -1625,6 +1754,12 @@ const CallSessionScreen = ({ navigation, route }) => {
         callType: activeCallType,
         source: 'acceptIncoming',
       });
+      if (activeCallType === 'video') {
+        logCallDebug('localCameraInitStarted', {
+          sessionId,
+          source: 'acceptIncoming',
+        });
+      }
       const permissionResult =
         activeCallType === 'video'
           ? await requestVideoCallPermissions()
@@ -1699,6 +1834,11 @@ const CallSessionScreen = ({ navigation, route }) => {
       setIsCameraEnabled(nextCallType === 'video');
       if (nextCallType === 'video') {
         setHasLocalVideoFrame(false);
+        setIsLocalPreviewBound(true);
+        logCallDebug('localPreviewBound', {
+          sessionId: nextPayload?.session?.id || sessionId || null,
+          source: 'accept_payload_video',
+        });
       }
       setStatusText(
         nextCallType === 'video'
@@ -1765,12 +1905,30 @@ const CallSessionScreen = ({ navigation, route }) => {
     }
   };
 
+  const callHeaderSecondaryText = isCallConnected ? fmt(elapsedSeconds) : statusText;
+
   return (
     <LinearGradient colors={['#08040F', '#110713', '#1A0A22']} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <TouchableOpacity style={styles.backBtn} onPress={minimizeCallScreen} activeOpacity={0.85}>
           <Ionicons name="chevron-back" size={22} color={theme.colors.textPrimary} />
         </TouchableOpacity>
+        <View pointerEvents="none" style={styles.topCallHeader}>
+          <Text style={styles.topCallHeaderName} numberOfLines={1}>
+            {displayName}
+          </Text>
+          <Text style={styles.topCallHeaderMeta} numberOfLines={1}>
+            {callHeaderSecondaryText}
+          </Text>
+          {lowBalanceWarning ? (
+            <View style={styles.topWarning}>
+              <Ionicons name="alert-circle" size={15} color={theme.colors.warning} />
+              <Text style={styles.topWarningText} numberOfLines={2}>
+                {lowBalanceWarning}
+              </Text>
+            </View>
+          ) : null}
+        </View>
 
         <View style={styles.center}>
           {showVideoSurfaces ? (
@@ -1798,22 +1956,15 @@ const CallSessionScreen = ({ navigation, route }) => {
               {isCameraEnabled ? (
                 <View style={styles.localPreviewContainer}>
                   {hasAgoraRtcSurfaceView ? (
-                    <>
-                      <RtcSurfaceView
-                        style={styles.localPreviewSurface}
-                        zOrderMediaOverlay
-                        canvas={{
-                          uid: 0,
-                          renderMode: RenderModeType.RenderModeHidden,
-                          sourceType: VideoSourceType.VideoSourceCameraPrimary,
-                        }}
-                      />
-                      {!hasLocalVideoFrame ? (
-                        <View style={styles.localPreviewOverlay}>
-                          <Ionicons name="videocam" size={20} color={theme.colors.textPrimary} />
-                        </View>
-                      ) : null}
-                    </>
+                    <RtcSurfaceView
+                      style={styles.localPreviewSurface}
+                      zOrderMediaOverlay
+                      canvas={{
+                        uid: 0,
+                        renderMode: RenderModeType.RenderModeHidden,
+                        sourceType: VideoSourceType.VideoSourceCameraPrimary,
+                      }}
+                    />
                   ) : (
                     <View style={styles.localPreviewOverlay}>
                       <Ionicons name="videocam-off" size={20} color={theme.colors.textPrimary} />
@@ -1834,12 +1985,6 @@ const CallSessionScreen = ({ navigation, route }) => {
               </View>
             </>
           )}
-          <View style={[styles.callInfoWrap, showVideoSurfaces ? styles.callInfoWrapVideo : null]}>
-            <Text style={styles.name}>{displayName}</Text>
-            <Text style={styles.statusText}>{statusText}</Text>
-            {isCallConnected ? <Text style={styles.timerText}>{fmt(elapsedSeconds)}</Text> : null}
-            {lowBalanceWarning ? <View style={styles.warning}><Ionicons name="alert-circle" size={16} color={theme.colors.warning} /><Text style={styles.warningText}>{lowBalanceWarning}</Text></View> : null}
-          </View>
         </View>
 
         {callMode === 'incoming' ? (
@@ -1918,6 +2063,45 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 12,
+  },
+  topCallHeader: {
+    position: 'absolute',
+    top: 12,
+    left: 70,
+    right: 70,
+    alignItems: 'center',
+    zIndex: 11,
+  },
+  topCallHeaderName: {
+    color: theme.colors.textPrimary,
+    fontSize: 21,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  topCallHeaderMeta: {
+    marginTop: 4,
+    color: theme.colors.textSecondary,
+    fontSize: 15,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  topWarning: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,184,0,0.38)',
+    backgroundColor: 'rgba(255,184,0,0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  topWarningText: {
+    color: theme.colors.warning,
+    fontSize: 12,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   center: {
     flex: 1,
@@ -2010,50 +2194,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.02)',
   },
   avatar: { width: 134, height: 134, borderRadius: 67 },
-  callInfoWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  callInfoWrapVideo: {
-    marginTop: 230,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderRadius: 16,
-    backgroundColor: 'rgba(5,7,18,0.46)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.11)',
-  },
-  name: {
-    marginTop: 18,
-    color: theme.colors.textPrimary,
-    fontSize: 30,
-    fontWeight: '700',
-  },
-  statusText: {
-    marginTop: 10,
-    color: theme.colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  timerText: {
-    marginTop: 4,
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 22,
-    fontWeight: '600',
-  },
-  warning: {
-    marginTop: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255,184,0,0.4)',
-    backgroundColor: 'rgba(255,184,0,0.12)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  warningText: { color: theme.colors.warning, fontSize: 13, flexShrink: 1 },
   incomingRow: {
     flexDirection: 'row',
     justifyContent: 'space-evenly',

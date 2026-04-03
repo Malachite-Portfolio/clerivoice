@@ -444,6 +444,11 @@ export const joinAgoraVoiceChannel = async ({
       });
 
       if (normalizedCallType === 'video') {
+        logAgoraVoice('localCameraInitStarted', {
+          channelName,
+          sessionId: sessionId || null,
+          callType: normalizedCallType,
+        });
         engine.enableVideo();
         engine.enableLocalVideo(true);
         engine.muteLocalVideoStream(false);
@@ -684,6 +689,23 @@ export const setLocalVideoEnabled = (enabled, options = {}) => {
     rtcEngine.enableLocalVideo(nextEnabled);
     rtcEngine.muteLocalVideoStream(!nextEnabled);
     if (nextEnabled) {
+      try {
+        rtcEngine.setupLocalVideo({
+          uid: 0,
+          renderMode: RenderModeType.RenderModeHidden,
+          sourceType: VideoSourceType.VideoSourceCameraPrimary,
+        });
+        logAgoraVoice('localPreviewBound', {
+          reason: options?.reason || 'toggle_local_camera',
+          callType: currentCallType,
+        });
+      } catch (bindingError) {
+        logAgoraVoice('localPreviewBindFailed', {
+          reason: options?.reason || 'toggle_local_camera',
+          callType: currentCallType,
+          message: bindingError?.message || 'Unknown error',
+        });
+      }
       rtcEngine.startPreview(VideoSourceType.VideoSourceCameraPrimary);
     } else {
       rtcEngine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
