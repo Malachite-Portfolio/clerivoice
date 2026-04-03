@@ -120,6 +120,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   const [remoteVideoUid, setRemoteVideoUid] = useState(null);
   const [hasLocalVideoFrame, setHasLocalVideoFrame] = useState(false);
   const [isLocalPreviewBound, setIsLocalPreviewBound] = useState(false);
+  const [localPreviewSurfaceVersion, setLocalPreviewSurfaceVersion] = useState(0);
   const [hasRemoteVideoFrame, setHasRemoteVideoFrame] = useState(false);
   const [isCallConnected, setIsCallConnected] = useState(false);
   const [lowBalanceWarning, setLowBalanceWarning] = useState('');
@@ -142,6 +143,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   const remoteUserJoinedRef = useRef(false);
   const previousSessionIdRef = useRef(sessionId);
   const appStateRef = useRef(AppState.currentState || 'active');
+  const localRtcUidRef = useRef(null);
   const localVideoBootstrapTimeoutRef = useRef(null);
   const localPreviewFailureTimeoutRef = useRef(null);
   const [isResolvingIncoming, setIsResolvingIncoming] = useState(false);
@@ -311,7 +313,9 @@ const CallSessionScreen = ({ navigation, route }) => {
     remoteUserJoinedRef.current = false;
     setCallConnectedState(false, 'session_changed_reset');
     setElapsedSeconds(0);
+    localRtcUidRef.current = null;
     setIsLocalPreviewBound(false);
+    setLocalPreviewSurfaceVersion(0);
     if (callSyncTimeoutRef.current) {
       clearTimeout(callSyncTimeoutRef.current);
       callSyncTimeoutRef.current = null;
@@ -354,6 +358,41 @@ const CallSessionScreen = ({ navigation, route }) => {
 
     return null;
   }, [host, incomingRequest, runtimePayload, sessionId]);
+
+  const bumpLocalPreviewSurfaceVersion = useCallback((reason = 'unknown') => {
+    setLocalPreviewSurfaceVersion((previous) => {
+      const next = previous + 1;
+      logCallDebug('localPreviewSurfaceRemount', {
+        sessionId,
+        reason,
+        previous,
+        next,
+      });
+      return next;
+    });
+  }, [sessionId]);
+
+  const resolveValidRemoteVideoUid = useCallback(
+    (candidateUid) => {
+      const numericUid = Number(candidateUid);
+      if (!Number.isFinite(numericUid) || numericUid <= 0) {
+        return null;
+      }
+
+      const localRtcUid = Number(localRtcUidRef.current || 0);
+      if (localRtcUid > 0 && numericUid === localRtcUid) {
+        logCallDebug('remoteUidIgnoredAsLocal', {
+          sessionId,
+          candidateUid: numericUid,
+          localRtcUid,
+        });
+        return null;
+      }
+
+      return numericUid;
+    },
+    [sessionId],
+  );
 
   useEffect(() => {
     const params = buildActiveCallRouteParams();
@@ -401,6 +440,7 @@ const CallSessionScreen = ({ navigation, route }) => {
         hasJoined: hasJoinedAgoraRef.current,
         cameraEnabled: isCameraEnabled,
       });
+      bumpLocalPreviewSurfaceVersion(`${reason}_${source}`);
       setLocalVideoEnabled(true, {
         reason: `${reason}_${source}`,
       });
@@ -427,7 +467,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       runEnable('timeout_fallback');
       localVideoBootstrapTimeoutRef.current = null;
     }, 250);
-  }, [isCameraEnabled, isDemoSession, sessionId]);
+  }, [bumpLocalPreviewSurfaceVersion, isCameraEnabled, isDemoSession, sessionId]);
 
   const cleanupAgoraSession = useCallback(async (reason = 'unknown') => {
     if (isDemoSession) {
@@ -452,6 +492,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     backendMarkedActiveRef.current = false;
     rtcConnectedRef.current = false;
     remoteUserJoinedRef.current = false;
+    localRtcUidRef.current = null;
     setCallConnectedState(false, `cleanup_${reason}`);
     if (localVideoBootstrapTimeoutRef.current) {
       clearTimeout(localVideoBootstrapTimeoutRef.current);
@@ -463,6 +504,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     }
     setHasLocalVideoFrame(false);
     setIsLocalPreviewBound(false);
+    setLocalPreviewSurfaceVersion(0);
     setHasRemoteVideoFrame(false);
     setRemoteVideoUid(null);
     setIsCameraEnabled(isVideoCall);
@@ -622,6 +664,10 @@ const CallSessionScreen = ({ navigation, route }) => {
       if (!latestAgoraRef.current?.appId || !latestAgoraRef.current?.token || !resolvedChannelName) {
         throw new Error('Missing Agora call credentials.');
       }
+      const initialLocalUid = Number(latestAgoraRef.current?.uid);
+      if (Number.isFinite(initialLocalUid) && initialLocalUid > 0) {
+        localRtcUidRef.current = initialLocalUid;
+      }
 
       logCallDebug('joinChannelCalled', {
         sessionId,
@@ -636,15 +682,21 @@ const CallSessionScreen = ({ navigation, route }) => {
         uid: latestAgoraRef.current.uid,
         sessionId,
         callType: activeCallType,
-        onJoinSuccess: () => {
+        onJoinSuccess: ({ localUid } = {}) => {
+          const normalizedLocalUid = Number(localUid);
+          if (Number.isFinite(normalizedLocalUid) && normalizedLocalUid > 0) {
+            localRtcUidRef.current = normalizedLocalUid;
+          }
           logCallDebug('joinSuccess', {
             sessionId,
             channelName: resolvedChannelName,
             attemptCount: joinAttemptCountRef.current,
             callType: activeCallType,
+            localUid: localRtcUidRef.current,
           });
           if (activeCallType === 'video') {
             setIsCameraEnabled(true);
+            bumpLocalPreviewSurfaceVersion('join_success');
             setIsLocalPreviewBound(true);
             logCallDebug('localPreviewBound', {
               sessionId,
@@ -679,12 +731,18 @@ const CallSessionScreen = ({ navigation, route }) => {
         },
         onUserJoined: (remoteUid) => {
           remoteUserJoinedRef.current = true;
-          if (activeCallType === 'video' && Number.isFinite(Number(remoteUid))) {
-            setRemoteVideoUid(Number(remoteUid));
+          const validRemoteUid = activeCallType === 'video'
+            ? resolveValidRemoteVideoUid(remoteUid)
+            : null;
+          if (activeCallType === 'video') {
+            if (validRemoteUid) {
+              setRemoteVideoUid(validRemoteUid);
+            }
           }
           logCallDebug('remoteUserJoined', {
             sessionId,
             remoteUid,
+            validRemoteUid,
             backendMarkedActive: backendMarkedActiveRef.current,
           });
           if (!backendMarkedActiveRef.current && !callConnectedRef.current) {
@@ -765,13 +823,15 @@ const CallSessionScreen = ({ navigation, route }) => {
             return;
           }
 
-          if (Number.isFinite(Number(remoteUid))) {
-            setRemoteVideoUid(Number(remoteUid));
+          const validRemoteUid = resolveValidRemoteVideoUid(remoteUid);
+          if (validRemoteUid) {
+            setRemoteVideoUid(validRemoteUid);
           }
-          setHasRemoteVideoFrame(true);
+          setHasRemoteVideoFrame(Boolean(validRemoteUid));
           logCallDebug('remoteVideoReceived', {
             sessionId,
             remoteUid,
+            validRemoteUid,
             width,
             height,
             elapsed,
@@ -784,13 +844,15 @@ const CallSessionScreen = ({ navigation, route }) => {
 
           const normalizedState = Number(state);
           const remoteVideoActive = [1, 2].includes(normalizedState);
-          if (Number.isFinite(Number(remoteUid))) {
-            setRemoteVideoUid(Number(remoteUid));
+          const validRemoteUid = resolveValidRemoteVideoUid(remoteUid);
+          if (validRemoteUid) {
+            setRemoteVideoUid(validRemoteUid);
           }
-          setHasRemoteVideoFrame(remoteVideoActive);
+          setHasRemoteVideoFrame(remoteVideoActive && Boolean(validRemoteUid));
           logCallDebug('remoteVideoStateChanged', {
             sessionId,
             remoteUid,
+            validRemoteUid,
             state: normalizedState,
             reason,
             elapsed,
@@ -859,7 +921,9 @@ const CallSessionScreen = ({ navigation, route }) => {
     cleanupAgoraSession,
     isDemoSession,
     isAgoraRtcNativeModuleAvailable,
+    bumpLocalPreviewSurfaceVersion,
     requestLocalVideoBootstrap,
+    resolveValidRemoteVideoUid,
     sessionId,
     setCallConnectedState,
     startTimer,
@@ -1128,6 +1192,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   }, [
     activateConnectedState,
     authSession?.accessToken,
+    bumpLocalPreviewSurfaceVersion,
     callMode,
     cleanupAgoraSession,
     clearActiveCall,
@@ -1203,6 +1268,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       if (acceptedCallType === 'video') {
         setIsCameraEnabled(true);
         setHasLocalVideoFrame(false);
+        bumpLocalPreviewSurfaceVersion('call_accepted_event');
         setIsLocalPreviewBound(true);
         logCallDebug('localPreviewBound', {
           sessionId,
@@ -1600,7 +1666,9 @@ const CallSessionScreen = ({ navigation, route }) => {
     if (!next) {
       setHasLocalVideoFrame(false);
       setIsLocalPreviewBound(false);
+      bumpLocalPreviewSurfaceVersion('camera_toggle_off');
     } else {
+      bumpLocalPreviewSurfaceVersion('camera_toggle_on');
       setIsLocalPreviewBound(true);
       logCallDebug('localPreviewBound', {
         sessionId,
@@ -1628,7 +1696,9 @@ const CallSessionScreen = ({ navigation, route }) => {
     logCallDebug('switchCameraPressed', {
       sessionId,
     });
+    bumpLocalPreviewSurfaceVersion('switch_camera_pressed');
     switchLocalCamera();
+    requestLocalVideoBootstrap('switch_camera_reassert', callTypeRef.current);
   };
 
   const minimizeCallScreen = useCallback(() => {
@@ -1861,6 +1931,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       setIsCameraEnabled(nextCallType === 'video');
       if (nextCallType === 'video') {
         setHasLocalVideoFrame(false);
+        bumpLocalPreviewSurfaceVersion('accept_payload_video');
         setIsLocalPreviewBound(true);
         logCallDebug('localPreviewBound', {
           sessionId: nextPayload?.session?.id || sessionId || null,
@@ -1964,6 +2035,7 @@ const CallSessionScreen = ({ navigation, route }) => {
               hasRemoteVideoFrame &&
               Number.isFinite(Number(remoteVideoUid)) ? (
                 <RtcSurfaceView
+                  key={`remote-video-${sessionId || 'unknown'}-${Number(remoteVideoUid)}`}
                   style={styles.remoteVideoSurface}
                   canvas={{
                     uid: Number(remoteVideoUid),
@@ -1984,7 +2056,9 @@ const CallSessionScreen = ({ navigation, route }) => {
                 <View style={styles.localPreviewContainer}>
                   {hasAgoraRtcSurfaceView ? (
                     <RtcSurfaceView
+                      key={`local-preview-${sessionId || 'unknown'}-${localPreviewSurfaceVersion}`}
                       style={styles.localPreviewSurface}
+                      zOrderOnTop
                       zOrderMediaOverlay
                       canvas={{
                         uid: 0,

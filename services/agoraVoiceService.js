@@ -60,6 +60,7 @@ let currentSpeakerOn = false;
 let currentCallType = 'audio';
 let currentCameraEnabled = false;
 let foregroundServiceSessionId = null;
+let localPreviewRebindTimers = [];
 
 const createAgoraRtcUnavailableError = () => {
   const error = new Error(
@@ -75,6 +76,60 @@ const logAgoraVoice = (label, payload) => {
   }
 
   console.log(`[AgoraVoice] ${label}`, payload);
+};
+
+const clearLocalPreviewRebindTimers = () => {
+  if (!localPreviewRebindTimers.length) {
+    return;
+  }
+
+  localPreviewRebindTimers.forEach((timerId) => clearTimeout(timerId));
+  localPreviewRebindTimers = [];
+};
+
+const bindAndStartLocalPreview = ({ reason = 'unknown', allowRetry = true } = {}) => {
+  if (!rtcEngine || currentCallType !== 'video' || !currentCameraEnabled) {
+    return;
+  }
+
+  const bindAttempt = (attempt = 1, maxAttempts = allowRetry ? 3 : 1) => {
+    try {
+      rtcEngine.setupLocalVideo({
+        uid: 0,
+        renderMode: RenderModeType.RenderModeHidden,
+        sourceType: VideoSourceType.VideoSourceCameraPrimary,
+      });
+      rtcEngine.startPreview(VideoSourceType.VideoSourceCameraPrimary);
+      logAgoraVoice('localPreviewBound', {
+        reason,
+        callType: currentCallType,
+        attempt,
+      });
+    } catch (error) {
+      logAgoraVoice('localPreviewBindFailed', {
+        reason,
+        callType: currentCallType,
+        attempt,
+        message: error?.message || 'Unknown error',
+      });
+
+      if (attempt >= maxAttempts) {
+        return;
+      }
+
+      const retryDelayMs = attempt === 1 ? 120 : 280;
+      const timerId = setTimeout(() => {
+        localPreviewRebindTimers = localPreviewRebindTimers.filter(
+          (existingId) => existingId !== timerId,
+        );
+        bindAttempt(attempt + 1, maxAttempts);
+      }, retryDelayMs);
+      localPreviewRebindTimers.push(timerId);
+    }
+  };
+
+  clearLocalPreviewRebindTimers();
+  bindAttempt(1, allowRetry ? 3 : 1);
 };
 
 const ensureRtcEngine = (appId) => {
@@ -344,12 +399,14 @@ export const joinAgoraVoiceChannel = async ({
     pendingJoinControls = { resolve, reject };
 
     registeredEventHandler = {
-      onJoinChannelSuccess: () => {
+      onJoinChannelSuccess: (connection, elapsed) => {
         joinedChannelName = channelName;
         clearPendingJoin();
+        const localUid = Number(connection?.localUid ?? connection?.uid ?? uid ?? 0);
         logAgoraVoice('joinSuccess', {
           channelName,
           sessionId: sessionId || null,
+          localUid: Number.isFinite(localUid) ? localUid : null,
         });
         logAgoraVoice('publishExecution', {
           channelName,
@@ -366,7 +423,10 @@ export const joinAgoraVoiceChannel = async ({
               : 'Voice call is active',
           callType: normalizedCallType,
         }).catch(() => {});
-        onJoinSuccess?.();
+        onJoinSuccess?.({
+          localUid: Number.isFinite(localUid) ? localUid : null,
+          elapsed,
+        });
         resolve(0);
       },
       onUserJoined: (_connection, remoteUid) => {
@@ -452,17 +512,12 @@ export const joinAgoraVoiceChannel = async ({
         engine.enableVideo();
         engine.enableLocalVideo(true);
         engine.muteLocalVideoStream(false);
-        engine.startPreview(VideoSourceType.VideoSourceCameraPrimary);
-        try {
-          engine.setupLocalVideo({
-            uid: 0,
-            renderMode: RenderModeType.RenderModeHidden,
-            sourceType: VideoSourceType.VideoSourceCameraPrimary,
-          });
-        } catch (_error) {
-          // Rendering setup may vary by SDK build; preview still proceeds.
-        }
+        bindAndStartLocalPreview({
+          reason: 'join_local_media_init',
+          allowRetry: true,
+        });
       } else {
+        clearLocalPreviewRebindTimers();
         try {
           engine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
         } catch (_error) {
@@ -689,25 +744,12 @@ export const setLocalVideoEnabled = (enabled, options = {}) => {
     rtcEngine.enableLocalVideo(nextEnabled);
     rtcEngine.muteLocalVideoStream(!nextEnabled);
     if (nextEnabled) {
-      try {
-        rtcEngine.setupLocalVideo({
-          uid: 0,
-          renderMode: RenderModeType.RenderModeHidden,
-          sourceType: VideoSourceType.VideoSourceCameraPrimary,
-        });
-        logAgoraVoice('localPreviewBound', {
-          reason: options?.reason || 'toggle_local_camera',
-          callType: currentCallType,
-        });
-      } catch (bindingError) {
-        logAgoraVoice('localPreviewBindFailed', {
-          reason: options?.reason || 'toggle_local_camera',
-          callType: currentCallType,
-          message: bindingError?.message || 'Unknown error',
-        });
-      }
-      rtcEngine.startPreview(VideoSourceType.VideoSourceCameraPrimary);
+      bindAndStartLocalPreview({
+        reason: options?.reason || 'toggle_local_camera',
+        allowRetry: true,
+      });
     } else {
+      clearLocalPreviewRebindTimers();
       rtcEngine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
     }
   } catch (_error) {
@@ -729,6 +771,10 @@ export const switchLocalCamera = () => {
 
   try {
     rtcEngine.switchCamera();
+    bindAndStartLocalPreview({
+      reason: 'switch_camera',
+      allowRetry: true,
+    });
     logAgoraVoice('cameraSwitched', {
       callType: currentCallType,
     });
@@ -761,6 +807,7 @@ export const leaveAgoraVoiceChannel = async () => {
   unregisterRtcEvents();
   cancelPendingJoin('Agora join cancelled: leaving channel');
   unregisterLeaveEvents();
+  clearLocalPreviewRebindTimers();
 
   pendingLeave = new Promise((resolve) => {
     leaveEventHandler = {
@@ -794,6 +841,7 @@ export const leaveAgoraVoiceChannel = async () => {
   })
     .catch(() => 0)
     .finally(() => {
+      clearLocalPreviewRebindTimers();
       try {
         rtcEngine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
       } catch (_error) {
@@ -842,6 +890,7 @@ export const destroyAgoraVoiceEngine = () => {
   pendingLeave = null;
   unregisterLeaveEvents();
   unregisterRtcEvents();
+  clearLocalPreviewRebindTimers();
   try {
     rtcEngine.stopPreview(VideoSourceType.VideoSourceCameraPrimary);
   } catch (_error) {
