@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useQueryClient } from '@tanstack/react-query';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
@@ -25,6 +26,7 @@ import {
 import {
   getCurrentRouteSnapshot,
   navigateToRoute,
+  navigationRef,
 } from '../navigation/navigationRef';
 import { getCallSession, getCallSessions } from '../services/sessionApi';
 
@@ -55,6 +57,22 @@ const getRouteSessionId = (route) => {
 
 const isActiveCallStatus = (status) =>
   ACTIVE_CALL_STATUSES.has(String(status || '').trim().toUpperCase());
+
+const getActiveCallStatusLabel = (activeCall) => {
+  const connectionState = String(activeCall?.connectionState || '')
+    .trim()
+    .toLowerCase();
+
+  if (connectionState === 'connected') {
+    return 'Connected';
+  }
+
+  if (connectionState === 'ringing') {
+    return 'Ringing';
+  }
+
+  return 'Connecting';
+};
 
 const getCounterpartyFromSession = (session, isListenerApp) =>
   isListenerApp ? session?.user || null : session?.listener || null;
@@ -274,15 +292,18 @@ const logRealtimeRuntime = (label, payload) => {
 const RealtimeRuntimeManager = () => {
   const { isHydrated, session } = useAuth();
   const { isListenerApp } = useAppVariant();
-  const { activeCall, setActiveCallFromParams, clearActiveCall } = useCallSession();
+  const { activeCall, isCallStateHydrated, setActiveCallFromParams, clearActiveCall } =
+    useCallSession();
   const queryClient = useQueryClient();
   const pushTokenRef = useRef(null);
   const pendingIntentRef = useRef(null);
   const bannerTimerRef = useRef(null);
+  const returnToCallVisibilityRef = useRef(null);
   const appStateRef = useRef(AppState.currentState || 'active');
   const callRestoreInFlightRef = useRef(false);
   const lastCallRestoreAtRef = useRef(0);
   const [foregroundBanner, setForegroundBanner] = useState(null);
+  const [currentRoute, setCurrentRoute] = useState(getCurrentRouteSnapshot());
 
   const appFlavor = isListenerApp ? 'listener' : 'user';
 
@@ -293,6 +314,33 @@ const RealtimeRuntimeManager = () => {
     }
 
     setForegroundBanner(null);
+  }, []);
+
+  useEffect(() => {
+    const syncRouteSnapshot = () => {
+      setCurrentRoute(getCurrentRouteSnapshot());
+    };
+
+    syncRouteSnapshot();
+
+    const stateUnsubscribe =
+      typeof navigationRef?.addListener === 'function'
+        ? navigationRef.addListener('state', syncRouteSnapshot)
+        : null;
+
+    const readyUnsubscribe =
+      typeof navigationRef?.addListener === 'function'
+        ? navigationRef.addListener('ready', syncRouteSnapshot)
+        : null;
+
+    return () => {
+      if (typeof stateUnsubscribe === 'function') {
+        stateUnsubscribe();
+      }
+      if (typeof readyUnsubscribe === 'function') {
+        readyUnsubscribe();
+      }
+    };
   }, []);
 
   const stopIncomingCallRingtone = useCallback(
@@ -523,6 +571,95 @@ const RealtimeRuntimeManager = () => {
     ],
   );
 
+  const returnToActiveCall = useCallback(
+    (source = 'return_to_call_cta') => {
+      const activeCallSessionId = activeCall?.sessionId || null;
+      if (!activeCallSessionId) {
+        return false;
+      }
+
+      const currentRouteSnapshot = getCurrentRouteSnapshot();
+      const currentSessionId = getRouteSessionId(currentRouteSnapshot);
+      if (
+        currentRouteSnapshot?.name === 'CallSession' &&
+        currentSessionId &&
+        String(currentSessionId) === String(activeCallSessionId)
+      ) {
+        return true;
+      }
+
+      if (activeCall?.params) {
+        setActiveCallFromParams(activeCall.params, `${source}_state_refresh`);
+      }
+
+      logRealtimeRuntime('returnToCallActionPressed', {
+        source,
+        sessionId: activeCallSessionId,
+        callType: activeCall?.callType || null,
+        mode: activeCall?.mode || null,
+      });
+
+      const didNavigate = activeCall?.params
+        ? navigateToRoute('CallSession', activeCall.params)
+        : false;
+
+      if (!didNavigate) {
+        restoreActiveCallSession(`${source}_navigation_fallback`, activeCallSessionId).catch(
+          () => {},
+        );
+      }
+
+      return didNavigate;
+    },
+    [
+      activeCall?.callType,
+      activeCall?.mode,
+      activeCall?.params,
+      activeCall?.sessionId,
+      restoreActiveCallSession,
+      setActiveCallFromParams,
+    ],
+  );
+
+  const currentRouteSessionId = getRouteSessionId(currentRoute);
+  const hasActiveCallSession = Boolean(activeCall?.sessionId && activeCall?.params);
+  const isViewingActiveCallSession =
+    hasActiveCallSession &&
+    currentRoute?.name === 'CallSession' &&
+    String(currentRouteSessionId || '') === String(activeCall?.sessionId || '');
+  const shouldShowReturnToCall = hasActiveCallSession && !isViewingActiveCallSession;
+  const returnToCallSubtitle = `${activeCall?.callType === 'video' ? 'Video' : 'Voice'} call | ${getActiveCallStatusLabel(activeCall)}`;
+
+  useEffect(() => {
+    if (!shouldShowReturnToCall || !activeCall?.sessionId) {
+      if (returnToCallVisibilityRef.current) {
+        logRealtimeRuntime('returnToCallEntryHidden', {
+          sessionId: returnToCallVisibilityRef.current,
+        });
+      }
+      returnToCallVisibilityRef.current = null;
+      return;
+    }
+
+    if (returnToCallVisibilityRef.current === activeCall.sessionId) {
+      return;
+    }
+
+    returnToCallVisibilityRef.current = activeCall.sessionId;
+    logRealtimeRuntime('returnToCallEntryVisible', {
+      sessionId: activeCall.sessionId,
+      callType: activeCall.callType || null,
+      mode: activeCall.mode || null,
+      routeName: currentRoute?.name || null,
+    });
+  }, [
+    activeCall?.callType,
+    activeCall?.mode,
+    activeCall?.sessionId,
+    currentRoute?.name,
+    shouldShowReturnToCall,
+  ]);
+
   const handleNavigationIntent = useCallback(
     (intent) => {
       if (!intent) {
@@ -546,6 +683,15 @@ const RealtimeRuntimeManager = () => {
         intent.params?.incomingRequest?.sessionId ||
         null;
 
+      if (intent?.routeName === 'CallSession') {
+        logRealtimeRuntime('notificationTappedForActiveCall', {
+          targetSessionId,
+          currentRouteName: currentRoute?.name || null,
+          currentSessionId: currentSessionId || null,
+          activeCallSessionId: activeCall?.sessionId || null,
+        });
+      }
+
       if (
         currentRoute?.name === intent.routeName &&
         currentSessionId &&
@@ -560,7 +706,7 @@ const RealtimeRuntimeManager = () => {
       });
       return navigateToRoute(intent.routeName, intent.params);
     },
-    [session?.accessToken, setActiveCallFromParams],
+    [activeCall?.sessionId, session?.accessToken, setActiveCallFromParams],
   );
 
   const showForegroundChatBanner = useCallback((notification) => {
@@ -624,6 +770,11 @@ const RealtimeRuntimeManager = () => {
       }
 
       if (appState === 'active' && previousState !== 'active') {
+        logRealtimeRuntime('appResumedWithActiveCall', {
+          hasActiveCall: Boolean(activeCall?.sessionId),
+          sessionId: activeCall?.sessionId || null,
+          callType: activeCall?.callType || null,
+        });
         restoreActiveCallSession('app_resume').catch(() => {});
       }
     });
@@ -632,6 +783,7 @@ const RealtimeRuntimeManager = () => {
       subscription.remove();
     };
   }, [
+    activeCall?.callType,
     activeCall?.sessionId,
     isListenerApp,
     restoreActiveCallSession,
@@ -714,6 +866,10 @@ const RealtimeRuntimeManager = () => {
       return undefined;
     }
 
+    if (!isCallStateHydrated) {
+      return undefined;
+    }
+
     if (!session?.accessToken) {
       pendingIntentRef.current = null;
       clearActiveCall('session_unavailable');
@@ -751,6 +907,7 @@ const RealtimeRuntimeManager = () => {
   }, [
     clearActiveCall,
     handleNavigationIntent,
+    isCallStateHydrated,
     isHydrated,
     restoreActiveCallSession,
     session?.accessToken,
@@ -932,25 +1089,54 @@ const RealtimeRuntimeManager = () => {
     [],
   );
 
-  if (!foregroundBanner) {
+  if (!foregroundBanner && !shouldShowReturnToCall) {
     return null;
   }
 
   return (
-    <View pointerEvents="box-none" style={styles.bannerLayer}>
-      <TouchableOpacity
-        activeOpacity={0.92}
-        onPress={dismissForegroundBanner}
-        style={styles.bannerCard}
-      >
-        <Text style={styles.bannerTitle} numberOfLines={1}>
-          {foregroundBanner.title}
-        </Text>
-        <Text style={styles.bannerBody} numberOfLines={2}>
-          {foregroundBanner.body}
-        </Text>
-      </TouchableOpacity>
-    </View>
+    <>
+      {foregroundBanner ? (
+        <View pointerEvents="box-none" style={styles.bannerLayer}>
+          <TouchableOpacity
+            activeOpacity={0.92}
+            onPress={dismissForegroundBanner}
+            style={styles.bannerCard}
+          >
+            <Text style={styles.bannerTitle} numberOfLines={1}>
+              {foregroundBanner.title}
+            </Text>
+            <Text style={styles.bannerBody} numberOfLines={2}>
+              {foregroundBanner.body}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {shouldShowReturnToCall ? (
+        <View pointerEvents="box-none" style={styles.returnToCallLayer}>
+          <TouchableOpacity
+            activeOpacity={0.9}
+            onPress={() => returnToActiveCall('return_to_call_cta')}
+            style={styles.returnToCallCard}
+          >
+            <Ionicons
+              name={activeCall?.callType === 'video' ? 'videocam' : 'call'}
+              size={18}
+              color="#FFFFFF"
+            />
+            <View style={styles.returnToCallTextWrap}>
+              <Text style={styles.returnToCallTitle} numberOfLines={1}>
+                Return to call
+              </Text>
+              <Text style={styles.returnToCallSubtitle} numberOfLines={1}>
+                {returnToCallSubtitle}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.84)" />
+          </TouchableOpacity>
+        </View>
+      ) : null}
+    </>
   );
 };
 
@@ -985,6 +1171,45 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     marginTop: 4,
+  },
+  returnToCallLayer: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    bottom: 26,
+    zIndex: 998,
+    elevation: 11,
+  },
+  returnToCallCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 42, 163, 0.46)',
+    backgroundColor: 'rgba(10, 9, 18, 0.98)',
+    minHeight: 54,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#000000',
+    shadowOpacity: 0.26,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  returnToCallTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  returnToCallTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  returnToCallSubtitle: {
+    marginTop: 2,
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 12,
+    fontWeight: '500',
   },
 });
 

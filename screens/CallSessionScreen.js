@@ -333,35 +333,37 @@ const CallSessionScreen = ({ navigation, route }) => {
     }
   }, [incomingRequest, isVideoCall, runtimePayload]);
 
-  useEffect(() => {
+  const buildActiveCallRouteParams = useCallback(() => {
     if (!sessionId) {
-      return;
+      return null;
     }
 
-    const params = runtimePayload
-      ? {
-          callPayload: runtimePayload,
-          host,
-        }
-      : incomingRequest
-        ? {
-            incomingRequest,
-            host,
-          }
-        : null;
+    if (runtimePayload) {
+      return {
+        callPayload: runtimePayload,
+        host,
+      };
+    }
+
+    if (incomingRequest) {
+      return {
+        incomingRequest,
+        host,
+      };
+    }
+
+    return null;
+  }, [host, incomingRequest, runtimePayload, sessionId]);
+
+  useEffect(() => {
+    const params = buildActiveCallRouteParams();
 
     if (!params) {
       return;
     }
 
     setActiveCallFromParams(params, 'call_screen_state_sync');
-  }, [
-    host,
-    incomingRequest,
-    runtimePayload,
-    sessionId,
-    setActiveCallFromParams,
-  ]);
+  }, [buildActiveCallRouteParams, setActiveCallFromParams]);
 
   const activateConnectedState = useCallback((startedAt) => {
     if (callSyncTimeoutRef.current) {
@@ -1126,6 +1128,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   }, [
     activateConnectedState,
     authSession?.accessToken,
+    callMode,
     cleanupAgoraSession,
     clearActiveCall,
     clearTimer,
@@ -1317,6 +1320,11 @@ const CallSessionScreen = ({ navigation, route }) => {
     }
 
     return () => {
+      logCallDebug('callScreenUnmount', {
+        sessionId,
+        callMode,
+        appState: appStateRef.current,
+      });
       socket.off('call_accepted', onCallAccepted);
       socket.off('call_started', onCallStarted);
       socket.off('call_rejected', onCallRejected);
@@ -1356,6 +1364,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   }, [
     activateConnectedState,
     authSession?.accessToken,
+    callMode,
     cleanupAgoraSession,
     clearActiveCall,
     clearTimer,
@@ -1623,6 +1632,16 @@ const CallSessionScreen = ({ navigation, route }) => {
   };
 
   const minimizeCallScreen = useCallback(() => {
+    const persistedParams = buildActiveCallRouteParams();
+    if (persistedParams) {
+      setActiveCallFromParams(persistedParams, 'call_screen_minimize');
+      logCallDebug('activeCallStateSaved', {
+        sessionId,
+        source: 'call_screen_minimize',
+        callType: callTypeRef.current,
+      });
+    }
+
     logCallDebug('callScreenMinimized', {
       sessionId,
       callMode,
@@ -1643,7 +1662,15 @@ const CallSessionScreen = ({ navigation, route }) => {
 
     navigation.navigate('MainDrawer');
     return true;
-  }, [callMode, isCallConnected, isListener, navigation, sessionId]);
+  }, [
+    buildActiveCallRouteParams,
+    callMode,
+    isCallConnected,
+    isListener,
+    navigation,
+    sessionId,
+    setActiveCallFromParams,
+  ]);
 
   useEffect(() => {
     const onHardwareBackPress = () => {

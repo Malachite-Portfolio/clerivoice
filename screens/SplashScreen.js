@@ -17,7 +17,7 @@ import {
 
 const SplashScreen = ({ navigation }) => {
   const { session, isHydrated } = useAuth();
-  const { activeCall } = useCallSession();
+  const { activeCall, isCallStateHydrated } = useCallSession();
   const { appDisplayName, isListenerApp } = useAppVariant();
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.9)).current;
@@ -48,6 +48,9 @@ const SplashScreen = ({ navigation }) => {
       }
 
       if (!isHydrated) {
+        return;
+      }
+      if (!isCallStateHydrated) {
         return;
       }
       if (session?.accessToken) {
@@ -94,6 +97,7 @@ const SplashScreen = ({ navigation }) => {
     activeCall?.mode,
     activeCall?.params,
     activeCall?.sessionId,
+    isCallStateHydrated,
     isHydrated,
     navigation,
     opacity,
