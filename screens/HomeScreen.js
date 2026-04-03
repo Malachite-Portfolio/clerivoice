@@ -345,11 +345,12 @@ const HomeScreen = ({ navigation }) => {
     }
   };
 
-  const openInboxItem = (item) => {
+  const openInboxItem = async (item) => {
     if (!session?.accessToken) return resetToAuthEntry();
     if (item?.type !== 'chat') {
       return Alert.alert('Call history', item?.preview || 'Call activity updated.');
     }
+
     const host = {
       name: item?.participant?.name || 'Conversation',
       avatar: resolveAvatarUri({
@@ -362,7 +363,42 @@ const HomeScreen = ({ navigation }) => {
       userId: item?.participant?.id || null,
       isOnline: up(item?.status) === 'ACTIVE',
     };
-    return navigation.navigate('ChatSession', { chatPayload: { session: item.session, agora: null }, host });
+
+    const normalizedStatus = up(item?.session?.status);
+    const isListenerRole = up(session?.user?.role) === 'LISTENER';
+
+    if (!isListenerRole && normalizedStatus !== 'ACTIVE') {
+      if (!host?.listenerId) {
+        Alert.alert('Chat unavailable', 'Unable to start a new chat session right now.');
+        return;
+      }
+
+      try {
+        const chatPayload = await requestChat(host.listenerId);
+        await refreshLiveData();
+        navigation.navigate('ChatSession', { chatPayload, host });
+      } catch (error) {
+        if (!isUnauthorizedApiError(error)) {
+          Alert.alert(
+            'Unable to start chat',
+            error?.response?.data?.message ||
+              error?.message ||
+              'This host is currently unavailable.',
+          );
+        }
+      }
+      return;
+    }
+
+    if (isListenerRole && normalizedStatus !== 'ACTIVE') {
+      Alert.alert(
+        'No active chat',
+        'This session has already ended. Wait for the user to start a new chat.',
+      );
+      return;
+    }
+
+    navigation.navigate('ChatSession', { chatPayload: { session: item.session, agora: null }, host });
   };
 
   const openWallet = () => {

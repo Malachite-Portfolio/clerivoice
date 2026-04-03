@@ -15,6 +15,7 @@ let io = null;
 let billingManager = null;
 
 const FINAL_CHAT_STATES = new Set(['ENDED', 'CANCELLED', 'REJECTED']);
+const CHAT_STATES_THAT_REQUIRE_MESSAGE_CLEAR = new Set(['ENDED', 'CANCELLED', 'REJECTED']);
 
 const setRealtimeDependencies = ({ socketServer, sessionBillingManager }) => {
   io = socketServer;
@@ -76,6 +77,13 @@ const finalizeChatSession = async ({
   restoreListenerAvailability = true,
 }) => {
   if (FINAL_CHAT_STATES.has(session.status)) {
+    logger.info('[Chat] finalize skipped, session already final', {
+      sessionId: session.id,
+      status: session.status,
+      requestedStatus: status,
+      endReason,
+      endedBy: endedBy || null,
+    });
     return session;
   }
 
@@ -91,6 +99,22 @@ const finalizeChatSession = async ({
       endReason,
     },
   });
+
+  let clearedMessageCount = 0;
+  if (CHAT_STATES_THAT_REQUIRE_MESSAGE_CLEAR.has(String(status || '').toUpperCase())) {
+    const deleted = await prisma.chatMessage.deleteMany({
+      where: {
+        sessionId: session.id,
+      },
+    });
+    clearedMessageCount = Number(deleted?.count || 0);
+    logger.info('[Chat] session messages cleared after finalization', {
+      sessionId: session.id,
+      status,
+      endReason,
+      clearedMessageCount,
+    });
+  }
 
   if (billingManager) {
     billingManager.stopChatBilling(session.id);
@@ -108,6 +132,8 @@ const finalizeChatSession = async ({
     endedBy: endedBy || 'SYSTEM',
     totalAmount: Number(updated.totalAmount || 0),
     billedMinutes: updated.billedMinutes,
+    messagesCleared: clearedMessageCount > 0,
+    clearedMessageCount,
   };
 
   if (io) {
@@ -120,6 +146,15 @@ const finalizeChatSession = async ({
       sessionType: 'chat',
     });
   }
+
+  logger.info('[Chat] session finalized', {
+    sessionId: session.id,
+    status,
+    endReason,
+    endedBy: endedBy || 'SYSTEM',
+    reasonCode: reasonCode || null,
+    clearedMessageCount,
+  });
 
   return updated;
 };
@@ -439,10 +474,19 @@ const getChatMessages = async ({ userId, sessionId }) => {
 
   assertChatParticipant(session, userId);
 
-  const messages = await prisma.chatMessage.findMany({
-    where: { sessionId },
-    orderBy: { createdAt: 'asc' },
-  });
+  let messages = [];
+  if (CHAT_STATES_THAT_REQUIRE_MESSAGE_CLEAR.has(String(session.status || '').toUpperCase())) {
+    logger.info('[Chat] skipping ended session history fetch', {
+      sessionId,
+      status: session.status,
+      requesterId: userId,
+    });
+  } else {
+    messages = await prisma.chatMessage.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
 
   return {
     session: {

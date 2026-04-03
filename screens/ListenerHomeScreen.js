@@ -307,6 +307,15 @@ const ListenerHomeScreen = ({ navigation }) => {
   };
 
   const openChatItem = (item) => {
+    const normalizedStatus = String(item?.session?.status || '').trim().toUpperCase();
+    if (normalizedStatus !== 'ACTIVE') {
+      Alert.alert(
+        'No active chat',
+        'This chat session has ended. A new chat will appear when the user starts one.',
+      );
+      return;
+    }
+
     navigation.navigate('ChatSession', {
       chatPayload: {
         session: item.session,

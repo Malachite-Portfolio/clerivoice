@@ -11,9 +11,18 @@ import {
   getDemoWalletSummary,
   isDemoSessionActive,
 } from './demoMode';
+import {
+  getLocallyEndedChatSessionIds,
+  getPendingChatSessionEnds,
+  isChatSessionMarkedEndedLocally,
+  markChatSessionEndedLocally,
+  markChatSessionEndSynced,
+} from './chatSessionState';
 
 const CHAT_SESSION_PAGE_SIZE = 10;
 const CALL_SESSION_PAGE_SIZE = 10;
+const FINAL_CHAT_STATES = new Set(['ENDED', 'CANCELLED', 'REJECTED']);
+let pendingChatEndSyncPromise = null;
 
 const logSessionApi = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
@@ -79,6 +88,91 @@ const getChatFallbackPreview = (status) => {
   }
 };
 
+const safeErrorCode = (error) =>
+  String(error?.code || error?.response?.data?.code || '')
+    .trim()
+    .toUpperCase();
+
+const isIgnorableChatEndSyncError = (error) => {
+  const statusCode = Number(error?.response?.status || 0);
+  const code = safeErrorCode(error);
+  return (
+    statusCode === 404 ||
+    code === 'CHAT_SESSION_NOT_FOUND' ||
+    code === 'CHAT_ALREADY_ENDED' ||
+    (statusCode === 400 && code === 'INVALID_CHAT_STATE')
+  );
+};
+
+const postEndChatSession = async (sessionId, endReason) => {
+  const response = await apiClient.post(API_ENDPOINTS.chat.end(sessionId), { endReason });
+  return response.data.data;
+};
+
+const syncPendingChatSessionEnds = async () => {
+  if (isDemoSessionActive()) {
+    return;
+  }
+
+  if (pendingChatEndSyncPromise) {
+    return pendingChatEndSyncPromise;
+  }
+
+  pendingChatEndSyncPromise = (async () => {
+    const pendingEnds = await getPendingChatSessionEnds();
+    if (!pendingEnds.length) {
+      return;
+    }
+
+    logSessionApi('chatSessionEndSyncStart', {
+      pendingCount: pendingEnds.length,
+    });
+
+    for (const entry of pendingEnds) {
+      const sessionId = String(entry?.sessionId || '').trim();
+      if (!sessionId) {
+        continue;
+      }
+
+      const endReason = String(entry?.endReason || 'USER_ENDED')
+        .trim()
+        .toUpperCase();
+
+      try {
+        await postEndChatSession(sessionId, endReason);
+        await markChatSessionEndSynced(sessionId);
+        logSessionApi('chatSessionEndSyncSuccess', {
+          sessionId,
+          endReason,
+        });
+      } catch (error) {
+        if (isIgnorableChatEndSyncError(error)) {
+          await markChatSessionEndSynced(sessionId);
+          logSessionApi('chatSessionEndSyncIgnored', {
+            sessionId,
+            endReason,
+            statusCode: Number(error?.response?.status || 0),
+            code: safeErrorCode(error) || null,
+          });
+          continue;
+        }
+
+        logSessionApi('chatSessionEndSyncFailure', {
+          sessionId,
+          endReason,
+          statusCode: Number(error?.response?.status || 0),
+          code: safeErrorCode(error) || null,
+          message: error?.response?.data?.message || error?.message || 'Unknown error',
+        });
+      }
+    }
+  })().finally(() => {
+    pendingChatEndSyncPromise = null;
+  });
+
+  return pendingChatEndSyncPromise;
+};
+
 export const requestCall = async (listenerId, options = {}) => {
   const callType =
     String(options?.callType || '').trim().toLowerCase() === 'video'
@@ -135,6 +229,8 @@ export const requestChat = async (listenerId) => {
     return createDemoChatRequest(listenerId);
   }
 
+  await syncPendingChatSessionEnds().catch(() => {});
+
   logSessionApi('chatSessionCreateStart', {
     listenerId,
   });
@@ -148,12 +244,39 @@ export const requestChat = async (listenerId) => {
 };
 
 export const endChatSession = async (sessionId, endReason = 'USER_ENDED') => {
-  if (isDemoSessionActive()) {
-    return endDemoChatSession(sessionId, endReason);
+  const normalizedSessionId = String(sessionId || '').trim();
+  const normalizedEndReason = String(endReason || 'USER_ENDED')
+    .trim()
+    .toUpperCase();
+
+  if (!normalizedSessionId) {
+    return null;
   }
 
-  const response = await apiClient.post(API_ENDPOINTS.chat.end(sessionId), { endReason });
-  return response.data.data;
+  await markChatSessionEndedLocally({
+    sessionId: normalizedSessionId,
+    endReason: normalizedEndReason,
+    source: 'session_api_end_chat',
+    pendingSync: false,
+  });
+
+  if (isDemoSessionActive()) {
+    return endDemoChatSession(normalizedSessionId, normalizedEndReason);
+  }
+
+  try {
+    const data = await postEndChatSession(normalizedSessionId, normalizedEndReason);
+    await markChatSessionEndSynced(normalizedSessionId);
+    return data;
+  } catch (error) {
+    await markChatSessionEndedLocally({
+      sessionId: normalizedSessionId,
+      endReason: normalizedEndReason,
+      source: 'session_api_end_chat_failed',
+      pendingSync: true,
+    });
+    throw error;
+  }
 };
 
 export const refreshChatToken = async (sessionId) => {
@@ -170,11 +293,34 @@ export const refreshChatToken = async (sessionId) => {
 };
 
 export const getChatMessages = async (sessionId) => {
-  if (isDemoSessionActive()) {
-    return getDemoChatMessages(sessionId);
+  const normalizedSessionId = String(sessionId || '').trim();
+  if (!normalizedSessionId) {
+    return {
+      session: null,
+      messages: [],
+    };
   }
 
-  const response = await apiClient.get(API_ENDPOINTS.chat.messages(sessionId));
+  if (isDemoSessionActive()) {
+    return getDemoChatMessages(normalizedSessionId);
+  }
+
+  await syncPendingChatSessionEnds().catch(() => {});
+  const isLocallyEnded = await isChatSessionMarkedEndedLocally(normalizedSessionId);
+  if (isLocallyEnded) {
+    logSessionApi('chatMessagesSuppressedByLocalEndMarker', {
+      sessionId: normalizedSessionId,
+    });
+    return {
+      session: {
+        id: normalizedSessionId,
+        status: 'ENDED',
+      },
+      messages: [],
+    };
+  }
+
+  const response = await apiClient.get(API_ENDPOINTS.chat.messages(normalizedSessionId));
   return response.data.data;
 };
 
@@ -182,6 +328,8 @@ export const getChatSessions = async ({ page = 1, limit = CHAT_SESSION_PAGE_SIZE
   if (isDemoSessionActive()) {
     return getDemoChatSessions({ page, limit, status });
   }
+
+  await syncPendingChatSessionEnds().catch(() => {});
 
   const response = await apiClient.get(API_ENDPOINTS.chat.sessions, {
     params: {
@@ -265,6 +413,8 @@ export const getWalletSummary = async () => {
 };
 
 export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
+  await syncPendingChatSessionEnds().catch(() => {});
+  const locallyEndedSessionIds = await getLocallyEndedChatSessionIds();
   const chatSessionData = await getChatSessions({ page: 1, limit });
 
   const chatSessions = (chatSessionData?.items || []).filter(
@@ -281,6 +431,13 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
 
   const messageHistoryEntries = await Promise.all(
     chatSessions.map(async (session) => {
+      const sessionStatus = toStatus(session?.status);
+      if (
+        locallyEndedSessionIds.has(String(session?.id || '')) ||
+        FINAL_CHAT_STATES.has(sessionStatus)
+      ) {
+        return [session.id, []];
+      }
       try {
         const history = await getChatMessages(session.id);
         return [session.id, history?.messages || []];
@@ -294,8 +451,12 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
 
   const chatItems = chatSessions
     .map((session) => {
+      const sessionStatus = toStatus(session?.status);
+      const isFinalSession = FINAL_CHAT_STATES.has(sessionStatus);
+      const isLocallyEnded = locallyEndedSessionIds.has(String(session?.id || ''));
+      const shouldSuppressHistory = isLocallyEnded || isFinalSession;
       const participant = resolveSessionParticipant(session, currentUserId);
-      const messages = messageHistoryBySessionId[session.id] || [];
+      const messages = shouldSuppressHistory ? [] : messageHistoryBySessionId[session.id] || [];
       const meaningfulMessages = messages.filter(
         (message) => String(message?.content || '').trim().length > 0,
       );
@@ -330,19 +491,34 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
         sortAt: toTimestamp(timestamp),
         status: session.status,
         hasMessages: meaningfulMessages.length > 0,
+        isLocallyEnded,
       };
     })
-    .filter((item) => item.hasMessages && item?.participant?.id);
+    .filter((item) => item?.participant?.id);
 
-  const finalItems = chatItems
+  const dedupedByParticipant = new Map();
+  chatItems.forEach((item) => {
+    const participantId = String(item?.participant?.id || '');
+    if (!participantId) {
+      return;
+    }
+
+    const previous = dedupedByParticipant.get(participantId);
+    if (!previous || Number(item.sortAt || 0) >= Number(previous.sortAt || 0)) {
+      dedupedByParticipant.set(participantId, item);
+    }
+  });
+
+  const finalItems = Array.from(dedupedByParticipant.values())
     .sort((left, right) => right.sortAt - left.sortAt)
     .slice(0, limit);
 
   logSessionApi('inboxFinalCounts', {
     returned: finalItems.length,
     returnedTypes: finalItems.map((item) => item.type),
-    withChatMessages: chatItems.length,
+    withChatMessages: finalItems.filter((item) => item.hasMessages).length,
     withCallHistory: 0,
+    locallyEndedSuppressed: finalItems.filter((item) => item.isLocallyEnded).length,
   });
 
   return finalItems;

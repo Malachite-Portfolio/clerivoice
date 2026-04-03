@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsFocused } from '@react-navigation/native';
+import { useQueryClient } from '@tanstack/react-query';
 import theme from '../constants/theme';
 import { AGORA_CHAT_APP_KEY, AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
@@ -25,11 +26,13 @@ import {
   requestVideoCallPermissions,
 } from '../services/audioPermissions';
 import { getCallStatusMessageFromError } from '../services/callStatusMessage';
+import { markChatSessionEndedLocally } from '../services/chatSessionState';
 import {
   getChatInteractionPrefs,
   setConversationMuted,
   setUserBlocked,
 } from '../services/chatInteractionPrefs';
+import { queryKeys } from '../services/queryClient';
 
 const PATTERN = [{ t: 20, l: 24, s: 54 }, { t: 110, l: 180, s: 28 }, { t: 160, l: 42, s: 16 }, { t: 280, l: 220, s: 44 }, { t: 380, l: 70, s: 24 }, { t: 460, l: 200, s: 18 }, { t: 520, l: 18, s: 60 }, { t: 620, l: 190, s: 26 }];
 const time = (v) => new Date(v || Date.now()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -107,6 +110,7 @@ const formatPresenceLabel = (value) => {
 
 const ChatSessionScreen = ({ navigation, route }) => {
   const { session: authSession } = useAuth();
+  const queryClient = useQueryClient();
   const payload = route?.params?.chatPayload;
   const host = route?.params?.host || {};
   const sessionId = payload?.session?.id;
@@ -135,6 +139,10 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const demoReplyTimeoutRef = useRef(null);
   const demoRemoteTypingTimeoutRef = useRef(null);
   const sessionEndedRef = useRef(false);
+  const sessionEndingInFlightRef = useRef(null);
+  const allowNavigationRef = useRef(false);
+  const hasTriggeredExitCleanupRef = useRef(false);
+  const isMountedRef = useRef(true);
   const flatListRef = useRef(null);
   const blockedRef = useRef(false);
   const appStateRef = useRef(AppState.currentState || 'active');
@@ -293,6 +301,10 @@ const ChatSessionScreen = ({ navigation, route }) => {
 
   useEffect(() => {
     sessionEndedRef.current = false;
+    hasTriggeredExitCleanupRef.current = false;
+    sessionEndingInFlightRef.current = null;
+    allowNavigationRef.current = false;
+    isMountedRef.current = true;
     setMessages([]);
     setInputValue('');
     setLowBalanceWarning('');
@@ -304,6 +316,13 @@ const ChatSessionScreen = ({ navigation, route }) => {
       sessionId,
     });
   }, [sessionId, stopTimer]);
+
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    [],
+  );
 
   const updateMessages = useCallback((updater) => {
     setMessages((prev) => {
@@ -377,6 +396,205 @@ const ChatSessionScreen = ({ navigation, route }) => {
     if (socket && sessionId) socket.emit('chat_typing', { sessionId, isTyping: Boolean(isTyping) });
   }, [sessionId]);
 
+  const updateInboxCacheForEndedSession = useCallback(() => {
+    if (!sessionId) {
+      return;
+    }
+
+    const roleKey = isListener ? 'listener' : 'user';
+    queryClient.setQueryData(queryKeys.sessions.inbox(roleKey), (prevItems) => {
+      if (!Array.isArray(prevItems)) {
+        return prevItems;
+      }
+
+      return prevItems.map((item) => {
+        if (String(item?.session?.id || '') !== String(sessionId)) {
+          return item;
+        }
+
+        return {
+          ...item,
+          preview: 'Conversation ended.',
+          unreadCount: 0,
+          hasMessages: false,
+          status: 'ENDED',
+          session: {
+            ...(item?.session || {}),
+            status: 'ENDED',
+            endedAt: new Date().toISOString(),
+          },
+        };
+      });
+    });
+  }, [isListener, queryClient, sessionId]);
+
+  const resetLiveChatState = useCallback(
+    (nextStatus = 'ENDED') => {
+      emitTyping(false);
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      if (demoReplyTimeoutRef.current) {
+        clearTimeout(demoReplyTimeoutRef.current);
+      }
+      if (demoRemoteTypingTimeoutRef.current) {
+        clearTimeout(demoRemoteTypingTimeoutRef.current);
+      }
+      stopTimer();
+
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      setMessages([]);
+      setInputValue('');
+      setLowBalanceWarning('');
+      setRemoteTyping(false);
+      setElapsedSeconds(0);
+      setIsSendingMessage(false);
+      setSessionStatus(nextStatus);
+    },
+    [emitTyping, stopTimer],
+  );
+
+  const closeSessionAndCleanup = useCallback(
+    async ({
+      source = 'unknown',
+      endReason = isListener ? 'LISTENER_ENDED' : 'USER_ENDED',
+      navigateAfter = false,
+      navigationAction = null,
+      skipBackendEnd = false,
+    } = {}) => {
+      if (!sessionId) {
+        if (navigateAfter) {
+          allowNavigationRef.current = true;
+          if (navigationAction) {
+            navigation.dispatch(navigationAction);
+          } else {
+            navigation.goBack();
+          }
+        }
+        return;
+      }
+
+      if (sessionEndingInFlightRef.current) {
+        await sessionEndingInFlightRef.current.catch(() => {});
+        if (navigateAfter) {
+          allowNavigationRef.current = true;
+          if (navigationAction) {
+            navigation.dispatch(navigationAction);
+          } else {
+            navigation.goBack();
+          }
+        }
+        return;
+      }
+
+      const normalizedEndReason = String(endReason || (isListener ? 'LISTENER_ENDED' : 'USER_ENDED'))
+        .trim()
+        .toUpperCase();
+
+      const cleanupPromise = (async () => {
+        sessionEndedRef.current = true;
+        hasTriggeredExitCleanupRef.current = true;
+        resetLiveChatState('ENDED');
+        updateInboxCacheForEndedSession();
+
+        await markChatSessionEndedLocally({
+          sessionId,
+          endReason: normalizedEndReason,
+          source: `chat_screen_${source}`,
+          pendingSync: false,
+        }).catch(() => {});
+
+        logChatDebug('chatExitCleanupStart', {
+          sessionId,
+          source,
+          endReason: normalizedEndReason,
+          skipBackendEnd,
+        });
+
+        if (!skipBackendEnd) {
+          try {
+            await endChatSession(sessionId, normalizedEndReason);
+            logChatDebug('chatExitBackendEndSuccess', {
+              sessionId,
+              source,
+              endReason: normalizedEndReason,
+            });
+          } catch (error) {
+            logChatDebug('chatExitBackendEndFailure', {
+              sessionId,
+              source,
+              endReason: normalizedEndReason,
+              code: error?.code || error?.response?.data?.code || null,
+              message: error?.response?.data?.message || error?.message || 'Unknown error',
+            });
+          }
+
+          if (!isDemoSession) {
+            await emitWithAck('chat_ended', {
+              sessionId,
+              endReason: normalizedEndReason,
+            }).catch(() => {});
+          }
+        }
+
+        await leaveAgoraChatSession().catch(() => {});
+        await queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
+        logChatDebug('chatExitCleanupComplete', {
+          sessionId,
+          source,
+          endReason: normalizedEndReason,
+        });
+      })()
+        .catch((error) => {
+          logChatDebug('chatExitCleanupUnhandledError', {
+            sessionId,
+            source,
+            message: error?.message || 'Unknown error',
+          });
+        })
+        .finally(() => {
+          sessionEndingInFlightRef.current = null;
+        });
+
+      sessionEndingInFlightRef.current = cleanupPromise;
+      await cleanupPromise;
+
+      if (navigateAfter) {
+        allowNavigationRef.current = true;
+        if (navigationAction) {
+          navigation.dispatch(navigationAction);
+        } else {
+          navigation.goBack();
+        }
+      }
+    },
+    [
+      isListener,
+      isDemoSession,
+      navigation,
+      queryClient,
+      resetLiveChatState,
+      sessionId,
+      updateInboxCacheForEndedSession,
+    ],
+  );
+
+  const exitChatScreen = useCallback(
+    async (options = {}) => {
+      await closeSessionAndCleanup({
+        source: options?.source || 'manual_exit',
+        endReason: options?.endReason || (isListener ? 'LISTENER_ENDED' : 'USER_ENDED'),
+        navigateAfter: true,
+        navigationAction: options?.navigationAction || null,
+        skipBackendEnd: Boolean(options?.skipBackendEnd),
+      });
+    },
+    [closeSessionAndCleanup, isListener],
+  );
+
   const onInputChange = (text) => {
     setInputValue(text);
     if (!sessionId || sessionStatus !== 'ACTIVE') return;
@@ -388,22 +606,40 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const handleSessionEnded = useCallback((eventPayload) => {
     if (eventPayload?.sessionId !== sessionId || sessionEndedRef.current) return;
     sessionEndedRef.current = true;
-    emitTyping(false);
-    stopTimer();
-    setElapsedSeconds(0);
-    setIsSendingMessage(false);
-    setSessionStatus('ENDED');
+    hasTriggeredExitCleanupRef.current = true;
+    resetLiveChatState('ENDED');
+    updateInboxCacheForEndedSession();
     logChatDebug('chatSessionEnded', {
       sessionId,
       endReason: eventPayload?.endReason || null,
       reasonCode: eventPayload?.reasonCode || null,
     });
     if (eventPayload?.reasonCode === 'LOW_BALANCE') {
-      Alert.alert('Insufficient Balance', 'You do not have sufficient balance. Please recharge your wallet to continue.', [{ text: 'OK', onPress: () => navigation.goBack() }]);
+      Alert.alert(
+        'Insufficient Balance',
+        'You do not have sufficient balance. Please recharge your wallet to continue.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              exitChatScreen({
+                source: 'remote_low_balance_end',
+                endReason: eventPayload?.endReason || 'INSUFFICIENT_BALANCE',
+                skipBackendEnd: true,
+              }).catch(() => {});
+            },
+          },
+        ],
+        { cancelable: false },
+      );
     } else {
-      navigation.goBack();
+      exitChatScreen({
+        source: 'remote_chat_ended_event',
+        endReason: eventPayload?.endReason || (isListener ? 'LISTENER_ENDED' : 'USER_ENDED'),
+        skipBackendEnd: true,
+      }).catch(() => {});
     }
-  }, [emitTyping, navigation, sessionId, stopTimer]);
+  }, [exitChatScreen, isListener, resetLiveChatState, sessionId, updateInboxCacheForEndedSession]);
 
   useEffect(() => {
     if (isDemoSession) {
@@ -418,17 +654,21 @@ const ChatSessionScreen = ({ navigation, route }) => {
         const historyMessages = history?.messages || [];
         const liveSession = history?.session || payload?.session || {};
         const otherUserId = liveSession?.listenerId || host?.listenerId || null;
+        const normalizedStatus = normalizeChatStatus(liveSession?.status || 'ACTIVE');
 
         setMessages(historyMessages);
-        setSessionStatus(normalizeChatStatus(liveSession?.status || 'ACTIVE'));
+        setSessionStatus(normalizedStatus);
         setTargetUserId(otherUserId);
 
-        if (liveSession?.startedAt) {
+        if (normalizedStatus === 'ACTIVE' && liveSession?.startedAt) {
           startTimer(
             Math.max(0, Math.floor((Date.now() - new Date(liveSession.startedAt).getTime()) / 1000)),
           );
-        } else {
+        } else if (normalizedStatus === 'ACTIVE') {
           startTimer(0);
+        } else {
+          stopTimer();
+          setElapsedSeconds(0);
         }
       };
 
@@ -464,12 +704,22 @@ const ChatSessionScreen = ({ navigation, route }) => {
         const historyMessages = history?.messages || [];
         setMessages(historyMessages);
         const liveSession = history?.session || payload?.session || {};
-        setSessionStatus(
-          normalizeChatStatus(liveSession?.status || payload?.session?.status || 'ACTIVE'),
+        const normalizedStatus = normalizeChatStatus(
+          liveSession?.status || payload?.session?.status || 'ACTIVE',
         );
+        setSessionStatus(normalizedStatus);
         const otherUserId = currentUserId === liveSession?.userId ? liveSession?.listenerId : liveSession?.userId;
         setTargetUserId(otherUserId || host?.userId || null);
-        if (liveSession?.startedAt) startTimer(Math.max(0, Math.floor((Date.now() - new Date(liveSession.startedAt).getTime()) / 1000)));
+        if (normalizedStatus === 'ACTIVE' && liveSession?.startedAt) {
+          startTimer(
+            Math.max(0, Math.floor((Date.now() - new Date(liveSession.startedAt).getTime()) / 1000)),
+          );
+        } else if (normalizedStatus === 'ACTIVE') {
+          startTimer(0);
+        } else {
+          stopTimer();
+          setElapsedSeconds(0);
+        }
         const unreadIds = historyMessages.filter((item) => item?.receiverId === currentUserId && item?.status !== 'READ').map((item) => item.id);
         markMessagesRead(unreadIds, { force: true });
       } catch (error) {
@@ -683,6 +933,45 @@ const ChatSessionScreen = ({ navigation, route }) => {
   }, [messages, remoteTyping]);
 
   useEffect(() => {
+    if (!sessionId) {
+      return undefined;
+    }
+
+    const unsubscribeBeforeRemove = navigation.addListener('beforeRemove', (event) => {
+      if (allowNavigationRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      if (sessionEndingInFlightRef.current || hasTriggeredExitCleanupRef.current) {
+        return;
+      }
+      exitChatScreen({
+        source: 'navigation_before_remove',
+        navigationAction: event?.data?.action || null,
+        endReason: isListener ? 'LISTENER_ENDED' : 'USER_ENDED',
+      }).catch(() => {});
+    });
+
+    return unsubscribeBeforeRemove;
+  }, [exitChatScreen, isListener, navigation, sessionId]);
+
+  useEffect(
+    () => () => {
+      if (!sessionId || hasTriggeredExitCleanupRef.current) {
+        return;
+      }
+
+      closeSessionAndCleanup({
+        source: 'component_unmount',
+        endReason: isListener ? 'LISTENER_ENDED' : 'USER_ENDED',
+        navigateAfter: false,
+      }).catch(() => {});
+    },
+    [closeSessionAndCleanup, isListener, sessionId],
+  );
+
+  useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
 
@@ -820,27 +1109,10 @@ const ChatSessionScreen = ({ navigation, route }) => {
   };
 
   const onEndChat = async () => {
-    if (isDemoSession) {
-      emitTyping(false);
-      stopTimer();
-      await endChatSession(sessionId, isListener ? 'LISTENER_ENDED' : 'USER_ENDED');
-      navigation.goBack();
-      return;
-    }
-
-    try {
-      await endChatSession(sessionId, isListener ? 'LISTENER_ENDED' : 'USER_ENDED');
-      await emitWithAck('chat_ended', { sessionId, endReason: isListener ? 'LISTENER_ENDED' : 'USER_ENDED' }).catch(() => {});
-    } catch (_error) {
-    } finally {
-      emitTyping(false);
-      stopTimer();
-      setElapsedSeconds(0);
-      setIsSendingMessage(false);
-      setSessionStatus('ENDED');
-      await leaveAgoraChatSession().catch(() => {});
-      navigation.goBack();
-    }
+    await exitChatScreen({
+      source: 'menu_end_chat',
+      endReason: isListener ? 'LISTENER_ENDED' : 'USER_ENDED',
+    });
   };
 
   const onStartCallByType = async (callType = 'audio') => {
@@ -1186,7 +1458,16 @@ const ChatSessionScreen = ({ navigation, route }) => {
           enabled
         >
           <View style={styles.header}>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={() => {
+                exitChatScreen({
+                  source: 'header_back_button',
+                  endReason: isListener ? 'LISTENER_ENDED' : 'USER_ENDED',
+                }).catch(() => {});
+              }}
+              activeOpacity={0.85}
+            >
               <Ionicons name="chevron-back" size={18} color={theme.colors.textPrimary} />
             </TouchableOpacity>
             <TouchableOpacity
