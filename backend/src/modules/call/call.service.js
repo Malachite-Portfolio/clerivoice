@@ -25,6 +25,11 @@ const LISTABLE_CALL_STATUSES = new Set([
   'CANCELLED',
 ]);
 const VALID_CALL_TYPES = new Set(['audio', 'video']);
+const configuredRingingTimeoutMs = Number(process.env.CALL_RINGING_TIMEOUT_MS || 35000);
+const CALL_RINGING_TIMEOUT_MS = Number.isFinite(configuredRingingTimeoutMs)
+  ? Math.max(10000, configuredRingingTimeoutMs)
+  : 35000;
+const pendingRingingTimeouts = new Map();
 
 const normalizeCallType = (value) => {
   const normalized = String(value || '')
@@ -109,6 +114,130 @@ const resolveSessionRole = (session, actorId) => {
   return 'USER';
 };
 
+const clearPendingRingingTimeout = (sessionId, reason = 'unknown') => {
+  const key = String(sessionId || '');
+  if (!key) {
+    return;
+  }
+
+  const timeout = pendingRingingTimeouts.get(key);
+  if (timeout) {
+    clearTimeout(timeout);
+    pendingRingingTimeouts.delete(key);
+    logger.info('[CallTimeout] cleared ringing timeout', {
+      sessionId: key,
+      reason,
+    });
+  }
+};
+
+const scheduleMissedCallTimeout = (sessionId) => {
+  const key = String(sessionId || '');
+  if (!key) {
+    return;
+  }
+
+  clearPendingRingingTimeout(key, 'reschedule');
+
+  const timeout = setTimeout(async () => {
+    pendingRingingTimeouts.delete(key);
+
+    try {
+      const liveSession = await prisma.callSession.findUnique({
+        where: { id: key },
+        include: {
+          user: {
+            select: {
+              id: true,
+              displayName: true,
+              profileImageUrl: true,
+            },
+          },
+          listener: {
+            select: {
+              id: true,
+              displayName: true,
+              profileImageUrl: true,
+            },
+          },
+        },
+      });
+
+      if (!liveSession || !['REQUESTED', 'RINGING'].includes(liveSession.status)) {
+        return;
+      }
+
+      const callType = await resolveCallTypeFromSessionId(liveSession.id);
+      await prisma.callEvent.create({
+        data: {
+          sessionId: liveSession.id,
+          eventType: 'call_missed',
+          payload: {
+            reasonCode: 'MISSED_CALL_TIMEOUT',
+            callType,
+            missedAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      await finalizeCallSession({
+        session: liveSession,
+        status: 'MISSED',
+        endReason: 'TIMEOUT',
+        reasonCode: 'MISSED_CALL_TIMEOUT',
+        endedBy: 'SYSTEM',
+        force: true,
+      });
+
+      const missedAt = new Date().toISOString();
+      await Promise.allSettled([
+        pushNotificationService.sendMissedCallPush({
+          receiverId: liveSession.userId,
+          receiverRole: 'USER',
+          sessionId: liveSession.id,
+          callerId: liveSession.listenerId,
+          callerName: liveSession.listener?.displayName || 'Host',
+          callerAvatar: liveSession.listener?.profileImageUrl || null,
+          userId: liveSession.userId,
+          listenerId: liveSession.listenerId,
+          callType,
+          missedAt,
+        }),
+        pushNotificationService.sendMissedCallPush({
+          receiverId: liveSession.listenerId,
+          receiverRole: 'LISTENER',
+          sessionId: liveSession.id,
+          callerId: liveSession.userId,
+          callerName: liveSession.user?.displayName || 'User',
+          callerAvatar: liveSession.user?.profileImageUrl || null,
+          userId: liveSession.userId,
+          listenerId: liveSession.listenerId,
+          callType,
+          missedAt,
+        }),
+      ]);
+
+      logger.info('[CallTimeout] call marked missed after ringing timeout', {
+        sessionId: liveSession.id,
+        userId: liveSession.userId,
+        listenerId: liveSession.listenerId,
+        timeoutMs: CALL_RINGING_TIMEOUT_MS,
+      });
+    } catch (error) {
+      logger.error('[CallTimeout] missed call timeout handling failed', {
+        sessionId: key,
+        message: error?.message || 'Unknown error',
+      });
+    }
+  }, CALL_RINGING_TIMEOUT_MS);
+
+  pendingRingingTimeouts.set(key, timeout);
+  logger.info('[CallTimeout] scheduled ringing timeout', {
+    sessionId: key,
+    timeoutMs: CALL_RINGING_TIMEOUT_MS,
+  });
+};
+
 const finalizeCallSession = async ({
   session,
   status,
@@ -118,6 +247,8 @@ const finalizeCallSession = async ({
   force = false,
   restoreListenerAvailability = true,
 }) => {
+  clearPendingRingingTimeout(session?.id, 'finalize_call_session');
+
   if (FINAL_CALL_STATES.has(session.status)) {
     return session;
   }
@@ -293,6 +424,7 @@ const requestCall = async ({ userId, listenerId, callType }) => {
     sessionId: session.id,
     status: session.status,
   });
+  scheduleMissedCallTimeout(session.id);
 
   return {
     session: {
@@ -406,6 +538,7 @@ const acceptCall = async ({ listenerId, sessionId }) => {
     status: updated.status,
     callType,
   });
+  clearPendingRingingTimeout(sessionId, 'accept_call');
 
   return {
     session: {
@@ -426,6 +559,7 @@ const rejectCall = async ({ listenerId, sessionId, reason }) => {
   if (session.listenerId !== listenerId) {
     throw new AppError('Only listener can reject this call', 403, 'CALL_REJECT_FORBIDDEN');
   }
+  clearPendingRingingTimeout(sessionId, 'reject_call');
 
   const updated = await finalizeCallSession({
     session,
@@ -468,6 +602,7 @@ const endCall = async ({ actorId, sessionId, endReason = 'USER_ENDED' }) => {
   const actorRole = resolveSessionRole(session, actorId);
   const normalizedEndReason =
     endReason || (actorRole === 'LISTENER' ? 'LISTENER_ENDED' : 'USER_ENDED');
+  clearPendingRingingTimeout(sessionId, 'end_call');
 
   return finalizeCallSession({
     session,

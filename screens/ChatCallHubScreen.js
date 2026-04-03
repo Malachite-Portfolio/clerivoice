@@ -24,6 +24,7 @@ import { getChatSessions, getWalletSummary, requestCall, requestChat } from '../
 import { queryKeys } from '../services/queryClient';
 import { requestCallAudioPermissions } from '../services/audioPermissions';
 import { getCallStatusMessageByCode, getCallStatusMessageFromError } from '../services/callStatusMessage';
+import { isUserBlocked } from '../services/chatInteractionPrefs';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 
@@ -128,6 +129,15 @@ const ChatCallHubScreen = ({ navigation }) => {
     }
 
     try {
+      const blocked = await isUserBlocked({
+        currentUserId: session?.user?.id,
+        counterpartyId: host?.listenerId,
+      });
+      if (blocked) {
+        Alert.alert('Blocked contact', 'Unblock this host from chat menu before starting calls.');
+        return;
+      }
+
       await validateHostAvailability(host.listenerId);
 
       const permissionResult = await requestCallAudioPermissions();
@@ -166,6 +176,15 @@ const ChatCallHubScreen = ({ navigation }) => {
     }
 
     try {
+      const blocked = await isUserBlocked({
+        currentUserId: session?.user?.id,
+        counterpartyId: host?.listenerId,
+      });
+      if (blocked) {
+        Alert.alert('Blocked contact', 'Unblock this host from chat menu before starting a chat.');
+        return;
+      }
+
       await validateHostAvailability(host.listenerId);
 
       let existingActive = null;

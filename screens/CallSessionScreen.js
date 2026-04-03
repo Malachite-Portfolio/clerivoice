@@ -3,11 +3,6 @@ import { Alert, AppState, BackHandler, Image, StyleSheet, Text, TouchableOpacity
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
-import {
-  RenderModeType,
-  RtcSurfaceView,
-  VideoSourceType,
-} from 'react-native-agora';
 import theme from '../constants/theme';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
@@ -36,6 +31,24 @@ import {
   requestVideoCallPermissions,
 } from '../services/audioPermissions';
 import { getCallStatusMessageByCode } from '../services/callStatusMessage';
+
+let agoraRtcUiModule = null;
+let agoraRtcUiLoadError = null;
+
+try {
+  agoraRtcUiModule = require('react-native-agora');
+} catch (error) {
+  agoraRtcUiLoadError = error;
+}
+
+const RenderModeType = agoraRtcUiModule?.RenderModeType || {
+  RenderModeHidden: 1,
+};
+const VideoSourceType = agoraRtcUiModule?.VideoSourceType || {
+  VideoSourceCameraPrimary: 0,
+};
+const RtcSurfaceView = agoraRtcUiModule?.RtcSurfaceView || null;
+const hasAgoraRtcSurfaceView = Boolean(RtcSurfaceView);
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const src = (v) => (typeof v === 'string' ? { uri: v } : v || avatarPlaceholder);
@@ -118,6 +131,7 @@ const CallSessionScreen = ({ navigation, route }) => {
   const latestAgoraRef = useRef(payload?.agora || null);
   const runtimePayloadRef = useRef(route?.params?.callPayload || null);
   const callConnectedRef = useRef(payload?.session?.status === 'ACTIVE');
+  const backendMarkedActiveRef = useRef(payload?.session?.status === 'ACTIVE');
   const callStartedAtRef = useRef(payload?.session?.startedAt || payload?.session?.answeredAt || null);
   const joinAttemptCountRef = useRef(0);
   const currentAudioRouteRef = useRef(null);
@@ -133,6 +147,26 @@ const CallSessionScreen = ({ navigation, route }) => {
   const callMode =
     incomingRequest && !runtimePayload ? 'incoming' : isCallConnected ? 'active' : 'outgoing';
   const showVideoSurfaces = isVideoCall && callMode !== 'incoming' && !isDemoSession;
+
+  useEffect(() => {
+    logCallDebug('rendererMounted', {
+      sessionId,
+      showVideoSurfaces,
+      hasRtcSurfaceView: hasAgoraRtcSurfaceView,
+      nativeLoadError: hasAgoraRtcSurfaceView ? null : agoraRtcUiLoadError?.message || null,
+      hasLocalVideoFrame,
+      hasRemoteVideoFrame,
+      remoteVideoUid,
+      cameraEnabled: isCameraEnabled,
+    });
+  }, [
+    hasLocalVideoFrame,
+    hasRemoteVideoFrame,
+    isCameraEnabled,
+    remoteVideoUid,
+    sessionId,
+    showVideoSurfaces,
+  ]);
 
   const clearTimer = useCallback(
     ({ reset = false, reason = 'unknown' } = {}) => {
@@ -196,7 +230,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       latestAgoraRef.current = runtimePayload.agora;
     }
     if (runtimePayload?.session?.status === 'ACTIVE') {
-      callConnectedRef.current = true;
+      backendMarkedActiveRef.current = true;
     }
     if (runtimePayload?.session?.startedAt || runtimePayload?.session?.answeredAt) {
       callStartedAtRef.current =
@@ -320,6 +354,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     destroyAgoraVoiceEngine();
     hasJoinedAgoraRef.current = false;
     joiningAgoraRef.current = false;
+    backendMarkedActiveRef.current = false;
     setCallConnectedState(false, `cleanup_${reason}`);
     if (localVideoBootstrapTimeoutRef.current) {
       clearTimeout(localVideoBootstrapTimeoutRef.current);
@@ -520,7 +555,7 @@ const CallSessionScreen = ({ navigation, route }) => {
             sessionId,
             remoteUid,
           });
-          if (!isCallConnected) {
+          if (!callConnectedRef.current) {
             logCallDebug('callConnectedByRemoteJoin', {
               sessionId,
               remoteUid,
@@ -550,7 +585,7 @@ const CallSessionScreen = ({ navigation, route }) => {
             reason,
             rtcConnected,
           });
-          if (rtcConnected && !isCallConnected) {
+          if (rtcConnected && !callConnectedRef.current) {
             logCallDebug('callConnectedByRtcState', {
               sessionId,
               state,
@@ -663,7 +698,7 @@ const CallSessionScreen = ({ navigation, route }) => {
       logCallDebug('callMediaJoinedAck', {
         sessionId,
       });
-      if (callConnectedRef.current) {
+      if (callConnectedRef.current || backendMarkedActiveRef.current) {
         activateConnectedState(callStartedAtRef.current);
       } else {
         setStatusText(activeCallType === 'video' ? 'Connecting video...' : 'Connecting...');
@@ -689,7 +724,6 @@ const CallSessionScreen = ({ navigation, route }) => {
   }, [
     activateConnectedState,
     cleanupAgoraSession,
-    isCallConnected,
     isDemoSession,
     requestLocalVideoBootstrap,
     sessionId,
@@ -937,11 +971,14 @@ const CallSessionScreen = ({ navigation, route }) => {
       }
 
       if (normalizedStatus === 'ACTIVE') {
-        callConnectedRef.current = true;
+        backendMarkedActiveRef.current = true;
         if (!hasJoinedAgoraRef.current && !joiningAgoraRef.current) {
           await joinAgoraIfNeeded();
         }
-        if (hasJoinedAgoraRef.current) {
+        const hasBothJoinedMedia =
+          Boolean(realtime?.hasUserJoinedMedia) &&
+          Boolean(realtime?.hasListenerJoinedMedia);
+        if (hasJoinedAgoraRef.current && hasBothJoinedMedia) {
           activateConnectedState(callStartedAtRef.current);
         }
       }
@@ -1055,7 +1092,7 @@ const CallSessionScreen = ({ navigation, route }) => {
     };
     const onCallStarted = async (eventPayload) => {
       if (eventPayload?.sessionId !== sessionId) return;
-      callConnectedRef.current = true;
+      backendMarkedActiveRef.current = true;
       callStartedAtRef.current =
         eventPayload?.startedAt || eventPayload?.answeredAt || callStartedAtRef.current;
       setRuntimePayload((prev) =>
@@ -1282,11 +1319,11 @@ const CallSessionScreen = ({ navigation, route }) => {
     }
 
     if (runtimePayload?.session?.status === 'ACTIVE') {
-      callConnectedRef.current = true;
+      backendMarkedActiveRef.current = true;
       callStartedAtRef.current =
         runtimePayload?.session?.startedAt || runtimePayload?.session?.answeredAt || callStartedAtRef.current;
 
-      if (hasJoinedAgoraRef.current) {
+      if (hasJoinedAgoraRef.current && callConnectedRef.current) {
         activateConnectedState(callStartedAtRef.current);
       }
     }
@@ -1656,7 +1693,9 @@ const CallSessionScreen = ({ navigation, route }) => {
         <View style={styles.center}>
           {showVideoSurfaces ? (
             <View style={styles.videoSurfaceLayer}>
-              {hasRemoteVideoFrame && Number.isFinite(Number(remoteVideoUid)) ? (
+              {hasAgoraRtcSurfaceView &&
+              hasRemoteVideoFrame &&
+              Number.isFinite(Number(remoteVideoUid)) ? (
                 <RtcSurfaceView
                   style={styles.remoteVideoSurface}
                   canvas={{
@@ -1667,25 +1706,37 @@ const CallSessionScreen = ({ navigation, route }) => {
               ) : (
                 <View style={styles.videoFallback}>
                   <Image source={avatar} style={styles.videoFallbackAvatar} />
-                  <Text style={styles.videoFallbackText}>Waiting for remote video...</Text>
+                  <Text style={styles.videoFallbackText}>
+                    {hasAgoraRtcSurfaceView
+                      ? 'Waiting for remote video...'
+                      : 'Video renderer unavailable'}
+                  </Text>
                 </View>
               )}
               {isCameraEnabled ? (
                 <View style={styles.localPreviewContainer}>
-                  <RtcSurfaceView
-                    style={styles.localPreviewSurface}
-                    zOrderMediaOverlay
-                    canvas={{
-                      uid: 0,
-                      renderMode: RenderModeType.RenderModeHidden,
-                      sourceType: VideoSourceType.VideoSourceCameraPrimary,
-                    }}
-                  />
-                  {!hasLocalVideoFrame ? (
+                  {hasAgoraRtcSurfaceView ? (
+                    <>
+                      <RtcSurfaceView
+                        style={styles.localPreviewSurface}
+                        zOrderMediaOverlay
+                        canvas={{
+                          uid: 0,
+                          renderMode: RenderModeType.RenderModeHidden,
+                          sourceType: VideoSourceType.VideoSourceCameraPrimary,
+                        }}
+                      />
+                      {!hasLocalVideoFrame ? (
+                        <View style={styles.localPreviewOverlay}>
+                          <Ionicons name="videocam" size={20} color={theme.colors.textPrimary} />
+                        </View>
+                      ) : null}
+                    </>
+                  ) : (
                     <View style={styles.localPreviewOverlay}>
-                      <Ionicons name="videocam" size={20} color={theme.colors.textPrimary} />
+                      <Ionicons name="videocam-off" size={20} color={theme.colors.textPrimary} />
                     </View>
-                  ) : null}
+                  )}
                 </View>
               ) : (
                 <View style={styles.localPreviewPlaceholder}>

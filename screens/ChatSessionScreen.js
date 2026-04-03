@@ -10,13 +10,24 @@ import { resetToAuthEntry } from '../navigation/navigationRef';
 import { isUnauthorizedApiError } from '../services/apiClient';
 import { addDemoChatMessage, addDemoChatReply } from '../services/demoMode';
 import { connectRealtimeSocket, emitWithAck, getRealtimeSocket } from '../services/realtimeSocket';
-import { endChatSession, getChatMessages, refreshChatToken, requestCall } from '../services/sessionApi';
+import {
+  endChatSession,
+  getCallSessions,
+  getChatMessages,
+  refreshChatToken,
+  requestCall,
+} from '../services/sessionApi';
 import { initAgoraChatSession, leaveAgoraChatSession, renewAgoraChatToken } from '../services/agoraChatService';
 import {
   requestCallAudioPermissions,
   requestVideoCallPermissions,
 } from '../services/audioPermissions';
 import { getCallStatusMessageFromError } from '../services/callStatusMessage';
+import {
+  getChatInteractionPrefs,
+  setConversationMuted,
+  setUserBlocked,
+} from '../services/chatInteractionPrefs';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const PATTERN = [{ t: 20, l: 24, s: 54 }, { t: 110, l: 180, s: 28 }, { t: 160, l: 42, s: 16 }, { t: 280, l: 220, s: 44 }, { t: 380, l: 70, s: 24 }, { t: 460, l: 200, s: 18 }, { t: 520, l: 18, s: 60 }, { t: 620, l: 190, s: 26 }];
@@ -99,16 +110,26 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const [targetUserId, setTargetUserId] = useState(null);
   const [remoteTyping, setRemoteTyping] = useState(false);
   const [suspendedUntil, setSuspendedUntil] = useState(getSuspendedUntilFromSession(authSession));
+  const [isConversationMuted, setIsConversationMuted] = useState(false);
+  const [isCounterpartyBlocked, setIsCounterpartyBlocked] = useState(false);
   const timerRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const demoReplyTimeoutRef = useRef(null);
   const demoRemoteTypingTimeoutRef = useRef(null);
   const sessionEndedRef = useRef(false);
   const flatListRef = useRef(null);
+  const blockedRef = useRef(false);
 
   const title = useMemo(() => host?.name || 'Conversation', [host?.name]);
   const avatar = useMemo(() => src(host?.avatar || host?.profileImageUrl), [host?.avatar, host?.profileImageUrl]);
   const listenerId = payload?.session?.listenerId || host?.listenerId || null;
+  const counterpartyUserId = useMemo(
+    () =>
+      isListener
+        ? payload?.session?.userId || host?.userId || null
+        : payload?.session?.listenerId || host?.listenerId || null,
+    [host?.listenerId, host?.userId, isListener, payload?.session?.listenerId, payload?.session?.userId],
+  );
 
   const isSuspended = useMemo(() => {
     const suspendedUntilMs = toDateMs(suspendedUntil);
@@ -121,6 +142,54 @@ const ChatSessionScreen = ({ navigation, route }) => {
       setSuspendedUntil(nextSuspendedUntil);
     }
   }, [authSession]);
+
+  useEffect(() => {
+    blockedRef.current = isCounterpartyBlocked;
+  }, [isCounterpartyBlocked]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateInteractionPrefs = async () => {
+      if (!currentUserId || !counterpartyUserId) {
+        if (!cancelled) {
+          setIsConversationMuted(false);
+          setIsCounterpartyBlocked(false);
+        }
+        return;
+      }
+
+      const prefs = await getChatInteractionPrefs(currentUserId);
+      if (cancelled) {
+        return;
+      }
+
+      const muted = prefs.mutedConversationIds.includes(String(counterpartyUserId));
+      const blocked = prefs.blockedUserIds.includes(String(counterpartyUserId));
+
+      setIsConversationMuted(muted);
+      setIsCounterpartyBlocked(blocked);
+      blockedRef.current = blocked;
+      logChatDebug('interactionPrefsLoaded', {
+        sessionId,
+        counterpartyUserId,
+        muted,
+        blocked,
+      });
+    };
+
+    hydrateInteractionPrefs().catch((error) => {
+      logChatDebug('interactionPrefsLoadFailed', {
+        sessionId,
+        counterpartyUserId,
+        message: error?.message || 'Unknown error',
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [counterpartyUserId, currentUserId, sessionId]);
 
   // Allow the first message to send immediately while history loads.
   useEffect(() => {
@@ -145,8 +214,26 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const startTimer = useCallback((initialSeconds = 0) => {
     stopTimer();
     setElapsedSeconds(initialSeconds);
+    logChatDebug('chatTimerStarted', {
+      sessionId,
+      initialSeconds,
+      startedAt: new Date().toISOString(),
+    });
     timerRef.current = setInterval(() => setElapsedSeconds((prev) => prev + 1), 1000);
-  }, [stopTimer]);
+  }, [sessionId, stopTimer]);
+
+  useEffect(() => {
+    sessionEndedRef.current = false;
+    setMessages([]);
+    setInputValue('');
+    setLowBalanceWarning('');
+    setRemoteTyping(false);
+    setElapsedSeconds(0);
+    stopTimer();
+    logChatDebug('chatSessionStateReset', {
+      sessionId,
+    });
+  }, [sessionId, stopTimer]);
 
   const updateMessages = useCallback((updater) => {
     setMessages((prev) => {
@@ -301,11 +388,33 @@ const ChatSessionScreen = ({ navigation, route }) => {
     const onChatStarted = (eventPayload) => {
       if (eventPayload?.sessionId === sessionId) {
         setSessionStatus('ACTIVE');
-        startTimer(0);
+        const startedAt = eventPayload?.startedAt || new Date().toISOString();
+        const initialSeconds = Math.max(
+          0,
+          Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000),
+        );
+        startTimer(initialSeconds);
+        logChatDebug('chatStartedEventHandled', {
+          sessionId,
+          startedAt,
+          timerInitialSeconds: initialSeconds,
+          localTimestamp: new Date().toISOString(),
+        });
       }
     };
     const onChatMessage = (message) => {
       if (message?.sessionId !== sessionId) return;
+      if (
+        blockedRef.current &&
+        String(message?.senderId || '') === String(counterpartyUserId || '')
+      ) {
+        logChatDebug('messageIgnoredFromBlockedUser', {
+          sessionId,
+          messageId: message?.id || null,
+          senderId: message?.senderId || null,
+        });
+        return;
+      }
       logChatDebug('messageReceived', {
         sessionId: message?.sessionId || null,
         messageId: message?.id || null,
@@ -338,7 +447,26 @@ const ChatSessionScreen = ({ navigation, route }) => {
       stopTimer();
       leaveAgoraChatSession().catch(() => {});
     };
-  }, [appendMessage, authSession?.accessToken, currentUserId, emitTyping, handleSessionEnded, host?.listenerId, host?.userId, isDemoSession, markMessagesRead, navigation, payload?.agora?.appId, payload?.agora?.appKey, payload?.agora?.token, payload?.session, sessionId, startTimer, stopTimer]);
+  }, [
+    appendMessage,
+    authSession?.accessToken,
+    counterpartyUserId,
+    currentUserId,
+    emitTyping,
+    handleSessionEnded,
+    host?.listenerId,
+    host?.userId,
+    isDemoSession,
+    markMessagesRead,
+    navigation,
+    payload?.agora?.appId,
+    payload?.agora?.appKey,
+    payload?.agora?.token,
+    payload?.session,
+    sessionId,
+    startTimer,
+    stopTimer,
+  ]);
 
   useEffect(() => {
     flatListRef.current?.scrollToEnd({ animated: true });
@@ -377,6 +505,12 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const onSendMessage = async () => {
     const trimmed = inputValue.trim();
     if (!trimmed || !targetUserId) return;
+    if (isCounterpartyBlocked) {
+      return Alert.alert(
+        'Blocked contact',
+        'Unblock this contact from the menu before sending messages.',
+      );
+    }
     if (isSuspended) {
       const until = formatSuspendedUntil(suspendedUntil);
       return Alert.alert(
@@ -491,6 +625,13 @@ const ChatSessionScreen = ({ navigation, route }) => {
   const onStartCallByType = async (callType = 'audio') => {
     const normalizedCallType = callType === 'video' ? 'video' : 'audio';
 
+    if (isCounterpartyBlocked) {
+      return Alert.alert(
+        'Blocked contact',
+        `Unblock this contact from the menu before starting a ${normalizedCallType} call.`,
+      );
+    }
+
     if (isListener || !listenerId) {
       return Alert.alert(
         normalizedCallType === 'video'
@@ -578,10 +719,129 @@ const ChatSessionScreen = ({ navigation, route }) => {
           : isDemoSession
             ? 'Demo session ready'
             : 'Waiting to connect';
+  const onToggleConversationMute = useCallback(async () => {
+    if (!currentUserId || !counterpartyUserId) {
+      return;
+    }
+
+    const nextMuted = !isConversationMuted;
+    await setConversationMuted({
+      currentUserId,
+      counterpartyId: counterpartyUserId,
+      muted: nextMuted,
+    });
+
+    setIsConversationMuted(nextMuted);
+    logChatDebug('conversationMuteChanged', {
+      sessionId,
+      counterpartyUserId,
+      muted: nextMuted,
+    });
+  }, [counterpartyUserId, currentUserId, isConversationMuted, sessionId]);
+
+  const onToggleBlockedUser = useCallback(async () => {
+    if (!currentUserId || !counterpartyUserId) {
+      return;
+    }
+
+    const nextBlocked = !isCounterpartyBlocked;
+    await setUserBlocked({
+      currentUserId,
+      counterpartyId: counterpartyUserId,
+      blocked: nextBlocked,
+    });
+
+    setIsCounterpartyBlocked(nextBlocked);
+    blockedRef.current = nextBlocked;
+    logChatDebug('blockStateChanged', {
+      sessionId,
+      counterpartyUserId,
+      blocked: nextBlocked,
+    });
+  }, [counterpartyUserId, currentUserId, isCounterpartyBlocked, sessionId]);
+
+  const onOpenCallHistory = useCallback(async () => {
+    if (!authSession?.accessToken || !counterpartyUserId) {
+      return;
+    }
+
+    try {
+      const history = await getCallSessions({
+        page: 1,
+        limit: 50,
+        status: ['REQUESTED', 'RINGING', 'ACTIVE', 'ENDED', 'MISSED', 'REJECTED', 'CANCELLED'],
+      });
+
+      const callItems = (history?.items || []).filter((item) => {
+        const participantId = isListener ? item?.userId : item?.listenerId;
+        return String(participantId || '') === String(counterpartyUserId);
+      });
+
+      if (!callItems.length) {
+        Alert.alert('Call history', 'No call history found for this conversation.');
+        return;
+      }
+
+      const totalDuration = callItems.reduce(
+        (acc, item) => acc + Number(item?.durationSeconds || 0),
+        0,
+      );
+      const latestCall = callItems[0];
+      const latestCallAt =
+        latestCall?.endedAt ||
+        latestCall?.updatedAt ||
+        latestCall?.startedAt ||
+        latestCall?.requestedAt ||
+        latestCall?.createdAt ||
+        null;
+
+      Alert.alert(
+        'Call history',
+        `Total calls: ${callItems.length}\nTotal duration: ${duration(totalDuration)}\nLast call: ${time(
+          latestCallAt || new Date().toISOString(),
+        )}\nLatest status: ${String(latestCall?.status || 'UNKNOWN').toUpperCase()}`,
+      );
+      logChatDebug('callHistoryOpened', {
+        sessionId,
+        counterpartyUserId,
+        totalCalls: callItems.length,
+        totalDuration,
+      });
+    } catch (error) {
+      logChatDebug('callHistoryOpenFailed', {
+        sessionId,
+        counterpartyUserId,
+        message: error?.response?.data?.message || error?.message || 'Unknown error',
+      });
+      if (!isUnauthorizedApiError(error)) {
+        Alert.alert('Call history', 'Unable to load call history right now.');
+      }
+    }
+  }, [authSession?.accessToken, counterpartyUserId, isListener, sessionId]);
+
   const onOpenMenu = () => {
     Alert.alert(title, 'Choose an action for this conversation.', [
-      { text: 'Cancel', style: 'cancel' },
+      {
+        text: isConversationMuted ? 'Unmute' : 'Mute',
+        onPress: () => {
+          onToggleConversationMute().catch(() => {});
+        },
+      },
+      {
+        text: isCounterpartyBlocked ? 'Unblock' : 'Block',
+        style: isCounterpartyBlocked ? 'default' : 'destructive',
+        onPress: () => {
+          onToggleBlockedUser().catch(() => {});
+        },
+      },
+      {
+        text: 'Call history',
+        onPress: () => {
+          onOpenCallHistory().catch(() => {});
+        },
+      },
       { text: 'End chat', style: 'destructive', onPress: onEndChat },
+      { text: 'Cancel', style: 'cancel' },
     ]);
   };
 

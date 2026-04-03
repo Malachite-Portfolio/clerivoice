@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, AppState, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, AppState, Image, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -10,6 +10,7 @@ import StoryAvatar from '../components/StoryAvatar';
 import SupportCard from '../components/SupportCard';
 import WalletPill from '../components/WalletPill';
 import BottomSheetAnonymous from '../components/BottomSheetAnonymous';
+import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { useWalletFlow } from '../context/WalletFlowContext';
@@ -21,6 +22,7 @@ import { connectRealtimeSocket, subscribeRealtimeSocketState } from '../services
 import { queryKeys } from '../services/queryClient';
 import { requestCallAudioPermissions } from '../services/audioPermissions';
 import { getCallStatusMessageByCode, getCallStatusMessageFromError } from '../services/callStatusMessage';
+import { isUserBlocked } from '../services/chatInteractionPrefs';
 
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
 const TABS = ['Verified', 'Inbox'];
@@ -44,6 +46,8 @@ const HomeScreen = ({ navigation }) => {
   const [activeTab, setActiveTab] = useState(TABS[0]);
   const [showAnonymousModal, setShowAnonymousModal] = useState(false);
   const [socketState, setSocketState] = useState(SYNC.disconnected);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef(null);
 
   const hostsQuery = useQuery({ queryKey: queryKeys.hosts.list(hostQueryParams), queryFn: () => fetchHosts(hostQueryParams), staleTime: 10000 });
   const walletQuery = useQuery({ queryKey: queryKeys.wallet.summary, queryFn: getWalletSummary, staleTime: 10000, enabled: Boolean(session?.accessToken) });
@@ -54,10 +58,7 @@ const HomeScreen = ({ navigation }) => {
     enabled: Boolean(session?.accessToken) && activeTab === 'Inbox',
   });
 
-  const inboxItems = useMemo(
-    () => (inboxQuery.data || []).filter((item) => item?.type === 'chat'),
-    [inboxQuery.data],
-  );
+  const inboxItems = useMemo(() => inboxQuery.data || [], [inboxQuery.data]);
 
   const refreshLiveData = useCallback(async () => {
     await Promise.all([
@@ -124,6 +125,47 @@ const HomeScreen = ({ navigation }) => {
     };
   }), [hostsQuery.data?.items]);
 
+  const normalizedSearchQuery = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+
+  const filteredHosts = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return hosts;
+    }
+
+    return hosts.filter((item) => {
+      const searchableValue = `${item?.name || ''} ${item?.quote || ''} ${item?.experience || ''} ${item?.price || ''}`
+        .trim()
+        .toLowerCase();
+      return searchableValue.includes(normalizedSearchQuery);
+    });
+  }, [hosts, normalizedSearchQuery]);
+
+  const filteredInboxItems = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return inboxItems;
+    }
+
+    return inboxItems.filter((item) => {
+      const searchableValue = `${item?.participant?.name || ''} ${item?.preview || ''} ${item?.type || ''} ${item?.status || ''}`
+        .trim()
+        .toLowerCase();
+      return searchableValue.includes(normalizedSearchQuery);
+    });
+  }, [inboxItems, normalizedSearchQuery]);
+
+  useEffect(() => {
+    if (!AUTH_DEBUG_ENABLED) {
+      return;
+    }
+
+    console.log('[HomeScreen] searchQueryChanged', {
+      query: normalizedSearchQuery || null,
+      activeTab,
+      hostResultCount: filteredHosts.length,
+      inboxResultCount: filteredInboxItems.length,
+    });
+  }, [activeTab, filteredHosts.length, filteredInboxItems.length, normalizedSearchQuery]);
+
   const syncUi = {
     connected: { title: 'LIVE SYNC ON', subtitle: 'Connected and updating live data', button: 'LIVE', helper: '', pill: styles.livePill },
     reconnecting: { title: 'LIVE SYNC RECONNECTING', subtitle: 'Trying to restore live data', button: 'SYNCING', helper: 'Trying to restore live data', pill: styles.syncingPill },
@@ -146,6 +188,15 @@ const HomeScreen = ({ navigation }) => {
   const openCall = async (host) => {
     if (!session?.accessToken) return resetToAuthEntry();
     try {
+      const blocked = await isUserBlocked({
+        currentUserId: session?.user?.id,
+        counterpartyId: host?.listenerId,
+      });
+      if (blocked) {
+        Alert.alert('Blocked contact', 'Unblock this host from chat menu before starting calls.');
+        return;
+      }
+
       await validateHostAvailability(host.listenerId);
 
       const permissionResult = await requestCallAudioPermissions();
@@ -177,6 +228,15 @@ const HomeScreen = ({ navigation }) => {
   const openChat = async (host) => {
     if (!session?.accessToken) return resetToAuthEntry();
     try {
+      const blocked = await isUserBlocked({
+        currentUserId: session?.user?.id,
+        counterpartyId: host?.listenerId,
+      });
+      if (blocked) {
+        Alert.alert('Blocked contact', 'Unblock this host from chat menu before starting a chat.');
+        return;
+      }
+
       await validateHostAvailability(host.listenerId);
 
       // Prefer resuming an already-active chat session so history is preserved.
@@ -219,7 +279,7 @@ const HomeScreen = ({ navigation }) => {
   const openInboxItem = (item) => {
     if (!session?.accessToken) return resetToAuthEntry();
     if (item?.type !== 'chat') {
-      return Alert.alert('Unavailable', 'Only chat conversations are shown in Inbox.');
+      return Alert.alert('Call history', item?.preview || 'Call activity updated.');
     }
     const host = { name: item?.participant?.name || 'Conversation', avatar: img(item?.participant?.profileImageUrl), listenerId: item?.session?.listenerId || null, userId: item?.participant?.id || null, isOnline: up(item?.status) === 'ACTIVE' };
     return navigation.navigate('ChatSession', { chatPayload: { session: item.session, agora: null }, host });
@@ -261,9 +321,35 @@ const HomeScreen = ({ navigation }) => {
               </View>
             </View>
             <View style={styles.headerRight}>
-              <TouchableOpacity style={styles.iconBtn} activeOpacity={0.8}><Ionicons name="search" size={20} color={theme.colors.magenta} /></TouchableOpacity>
+              <TouchableOpacity
+                style={styles.iconBtn}
+                activeOpacity={0.8}
+                onPress={() => searchInputRef.current?.focus()}
+              >
+                <Ionicons name="search" size={20} color={theme.colors.magenta} />
+              </TouchableOpacity>
               <WalletPill amount={walletQuery.data?.balance ?? currentBalance ?? 0} onPress={openWallet} />
             </View>
+          </View>
+
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={16} color={theme.colors.textSecondary} />
+            <TextInput
+              ref={searchInputRef}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder={activeTab === 'Inbox' ? 'Search inbox...' : 'Search hosts...'}
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              style={styles.searchInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+            {searchQuery ? (
+              <TouchableOpacity onPress={() => setSearchQuery('')} activeOpacity={0.8}>
+                <Ionicons name="close-circle" size={18} color={theme.colors.textSecondary} />
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           {session?.isDemoUser ? (
@@ -296,7 +382,7 @@ const HomeScreen = ({ navigation }) => {
           {activeTab === 'Verified' ? (
             <>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storyRow}>
-                {hosts.slice(0, 8).map((story) => <StoryAvatar key={story.id} name={story.name} online={story.isOnline} image={story.avatar} onPress={() => Alert.alert(story.name, 'Host profile preview')} />)}
+                {filteredHosts.slice(0, 8).map((story) => <StoryAvatar key={story.id} name={story.name} online={story.isOnline} image={story.avatar} onPress={() => Alert.alert(story.name, 'Host profile preview')} />)}
               </ScrollView>
               <TouchableOpacity style={styles.anonCard} onPress={() => setShowAnonymousModal(true)} activeOpacity={0.9}>
                 <MaterialCommunityIcons name="incognito" size={20} color={theme.colors.magenta} style={{ marginRight: 10 }} />
@@ -308,15 +394,15 @@ const HomeScreen = ({ navigation }) => {
               <Text style={styles.sectionTitle}>Available Verified Hosts</Text>
               {hostsQuery.isLoading && !hostsQuery.data ? <View style={styles.stateCard}><Text style={styles.stateText}>Loading live hosts...</Text></View> : null}
               {hostsQuery.isError && !hostsQuery.data ? <View style={styles.errorCard}><Text style={styles.errorTitle}>Unable to load live data.</Text><TouchableOpacity style={styles.smallBtn} onPress={refreshLiveData}><Text style={styles.smallBtnText}>Retry</Text></TouchableOpacity></View> : null}
-              {!hostsQuery.isLoading && !hostsQuery.isError && !hosts.length ? <View style={styles.stateCard}><Text style={styles.stateText}>No available hosts right now.</Text></View> : null}
-              {!hostsQuery.isLoading && !hostsQuery.isError ? hosts.slice(0, 6).map((person) => <SupportCard key={person.id} person={person} talkDisabled={!person.isOnline} chatDisabled={!person.isOnline} onTalkPress={() => openCall(person)} onChatPress={() => openChat(person)} />) : null}
+              {!hostsQuery.isLoading && !hostsQuery.isError && !filteredHosts.length ? <View style={styles.stateCard}><Text style={styles.stateText}>{normalizedSearchQuery ? 'No hosts match your search.' : 'No available hosts right now.'}</Text></View> : null}
+              {!hostsQuery.isLoading && !hostsQuery.isError ? filteredHosts.slice(0, 6).map((person) => <SupportCard key={person.id} person={person} talkDisabled={!person.isOnline} chatDisabled={!person.isOnline} onTalkPress={() => openCall(person)} onChatPress={() => openChat(person)} />) : null}
             </>
           ) : (
             <View style={styles.inboxWrap}>
               {inboxQuery.isLoading && !inboxQuery.data ? <View style={styles.stateCard}><Text style={styles.stateText}>Loading your real conversations...</Text></View> : null}
               {inboxQuery.isError && !inboxQuery.data ? <View style={styles.errorCard}><Text style={styles.errorTitle}>Unable to load inbox.</Text><TouchableOpacity style={styles.smallBtn} onPress={refreshLiveData}><Text style={styles.smallBtnText}>Retry</Text></TouchableOpacity></View> : null}
-              {!inboxQuery.isLoading && !inboxQuery.isError && !inboxItems.length ? <View style={styles.emptyCard}><Text style={styles.emptyTitle}>Start conversation...</Text><Text style={styles.emptySub}>Your real chat history will appear here once you connect with a host.</Text></View> : null}
-              {inboxItems.map((item) => (
+              {!inboxQuery.isLoading && !inboxQuery.isError && !filteredInboxItems.length ? <View style={styles.emptyCard}><Text style={styles.emptyTitle}>{normalizedSearchQuery ? 'No matching conversations' : 'Start conversation...'}</Text><Text style={styles.emptySub}>{normalizedSearchQuery ? 'Try another name or keyword.' : 'Your real chat and call history will appear here once you connect with a host.'}</Text></View> : null}
+              {filteredInboxItems.map((item) => (
                 <TouchableOpacity key={item.id} style={styles.inboxRow} activeOpacity={0.88} onPress={() => openInboxItem(item)}>
                   <View style={styles.inboxAvatarWrap}>
                     <Image source={img(item?.participant?.profileImageUrl)} style={styles.inboxAvatar} />
@@ -350,6 +436,8 @@ const styles = StyleSheet.create({
   avatarShell: { width: 48, height: 48, borderRadius: 24, borderWidth: 1.5, borderColor: theme.colors.magenta, padding: 2, backgroundColor: 'rgba(255,255,255,0.08)' }, avatar: { width: '100%', height: '100%', borderRadius: 24 },
   greeting: { color: theme.colors.textSecondary, fontSize: 15, fontWeight: '500' }, heading: { color: theme.colors.textPrimary, fontSize: 17, fontWeight: '700', lineHeight: 22, maxWidth: 132 },
   iconBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: theme.colors.borderSoft, alignItems: 'center', justifyContent: 'center' },
+  searchBar: { marginBottom: 12, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.06)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, minHeight: 44, gap: 8 },
+  searchInput: { flex: 1, color: theme.colors.textPrimary, fontSize: 14, paddingVertical: 8 },
   demoBadge: { alignSelf: 'flex-start', marginBottom: 10, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,42,163,0.3)', backgroundColor: 'rgba(255,42,163,0.12)', paddingHorizontal: 12, paddingVertical: 6 },
   demoBadgeText: { color: theme.colors.textPrimary, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
   syncCard: { borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,42,163,0.4)', backgroundColor: 'rgba(36,15,42,0.85)', paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 10 },

@@ -1,12 +1,3 @@
-import {
-  AudioProfileType,
-  AudioScenarioType,
-  ChannelProfileType,
-  ClientRoleType,
-  RenderModeType,
-  VideoSourceType,
-  createAgoraRtcEngine,
-} from 'react-native-agora';
 import { Platform } from 'react-native';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import {
@@ -18,6 +9,35 @@ import {
   startOngoingCallForegroundService,
   stopOngoingCallForegroundService,
 } from './ongoingCallService';
+
+let agoraRtcSdk = null;
+let agoraRtcLoadError = null;
+
+try {
+  agoraRtcSdk = require('react-native-agora');
+} catch (error) {
+  agoraRtcLoadError = error;
+}
+
+const AudioProfileType = agoraRtcSdk?.AudioProfileType || {
+  AudioProfileSpeechStandard: 1,
+};
+const AudioScenarioType = agoraRtcSdk?.AudioScenarioType || {
+  AudioScenarioDefault: 0,
+};
+const ChannelProfileType = agoraRtcSdk?.ChannelProfileType || {
+  ChannelProfileCommunication: 0,
+};
+const ClientRoleType = agoraRtcSdk?.ClientRoleType || {
+  ClientRoleBroadcaster: 1,
+};
+const RenderModeType = agoraRtcSdk?.RenderModeType || {
+  RenderModeHidden: 1,
+};
+const VideoSourceType = agoraRtcSdk?.VideoSourceType || {
+  VideoSourceCameraPrimary: 0,
+};
+const createAgoraRtcEngine = agoraRtcSdk?.createAgoraRtcEngine || null;
 
 let rtcEngine = null;
 let registeredEventHandler = null;
@@ -37,6 +57,14 @@ let currentCallType = 'audio';
 let currentCameraEnabled = false;
 let foregroundServiceSessionId = null;
 
+const createAgoraRtcUnavailableError = () => {
+  const error = new Error(
+    'Agora RTC native module is unavailable. Verify release native linking and app initialization.',
+  );
+  error.code = 'AGORA_RTC_UNAVAILABLE';
+  return error;
+};
+
 const logAgoraVoice = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
     return;
@@ -46,6 +74,15 @@ const logAgoraVoice = (label, payload) => {
 };
 
 const ensureRtcEngine = (appId) => {
+  if (!createAgoraRtcEngine) {
+    if (AUTH_DEBUG_ENABLED) {
+      console.warn('[AgoraVoice] nativeUnavailable', {
+        message: agoraRtcLoadError?.message || null,
+      });
+    }
+    throw createAgoraRtcUnavailableError();
+  }
+
   if (!rtcEngine) {
     rtcEngine = createAgoraRtcEngine();
   }

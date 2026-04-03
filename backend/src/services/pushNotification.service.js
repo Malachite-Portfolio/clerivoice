@@ -289,6 +289,7 @@ const sendIncomingCallPush = async ({
       type: 'incoming_call',
       sessionId,
       callType: normalizedCallType,
+      listenerId,
       requesterId,
       requesterName,
       requesterAvatar: requesterAvatar || '',
@@ -306,9 +307,68 @@ const sendIncomingCallPush = async ({
   return sendExpoPushMessages(messages);
 };
 
+const sendMissedCallPush = async ({
+  receiverId,
+  receiverRole,
+  sessionId,
+  callerId,
+  callerName,
+  callerAvatar,
+  userId,
+  listenerId,
+  callType,
+  missedAt,
+}) => {
+  const normalizedCallType =
+    String(callType || '').trim().toLowerCase() === 'video' ? 'video' : 'audio';
+
+  const devices = await getActivePushDevices({
+    userId: receiverId,
+    appFlavor: roleToAppFlavor(receiverRole),
+  });
+
+  if (!devices.length) {
+    logger.info('[Push] missed call notification skipped - no devices', {
+      receiverId,
+      sessionId,
+    });
+    return [];
+  }
+
+  const messages = devices.map((device) => ({
+    to: device.expoPushToken,
+    title: `Missed ${normalizedCallType} call`,
+    body: callerName ? `You missed a call from ${callerName}.` : 'You have a missed call.',
+    sound: 'default',
+    priority: 'high',
+    channelId: 'calls',
+    data: {
+      type: 'missed_call',
+      sessionId,
+      callType: normalizedCallType,
+      callerId: callerId || null,
+      callerName: callerName || 'Unknown caller',
+      callerAvatar: callerAvatar || '',
+      userId: userId || null,
+      listenerId: listenerId || null,
+      missedAt: missedAt || new Date().toISOString(),
+    },
+  }));
+
+  logger.info('[Push] missed call notification queued', {
+    receiverId,
+    sessionId,
+    deviceCount: messages.length,
+    callType: normalizedCallType,
+  });
+
+  return sendExpoPushMessages(messages);
+};
+
 module.exports = {
   registerPushDevice,
   unregisterPushDevice,
   sendChatMessagePush,
   sendIncomingCallPush,
+  sendMissedCallPush,
 };

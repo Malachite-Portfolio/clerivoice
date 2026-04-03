@@ -164,6 +164,16 @@ android {
     }
 }
 
+tasks.configureEach { task ->
+    if (task.name.startsWith("configureCMake") || task.name.startsWith("buildCMake")) {
+        // Ensure generated RN codegen headers exist before CMake config/build.
+        // This preserves Agora TurboModule/Fabric providers in autolinking.cpp.
+        task.dependsOn("generateAutolinkingNewArchitectureFiles")
+        task.dependsOn(":react-native-agora:generateCodegenArtifactsFromSchema")
+        task.dependsOn(":react-native-agora-chat:generateCodegenArtifactsFromSchema")
+    }
+}
+
 // Apply static values from `gradle.properties` to the `android.packagingOptions`
 // Accepts values in comma delimited lists, example:
 // android.packagingOptions.pickFirsts=/LICENSE,**/picasa.ini

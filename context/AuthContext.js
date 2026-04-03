@@ -6,7 +6,11 @@ import {
   AUTH_DEBUG_ENABLED,
 } from '../constants/api';
 import { resetToAuthEntry } from '../navigation/navigationRef';
-import { setApiAccessToken, setApiUnauthorizedHandler } from '../services/apiClient';
+import {
+  isUnauthorizedApiError,
+  setApiAccessToken,
+  setApiUnauthorizedHandler,
+} from '../services/apiClient';
 import { disconnectRealtimeSocket } from '../services/realtimeSocket';
 import { useAppVariant } from './AppVariantContext';
 
@@ -80,6 +84,25 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
     }
 
     console.log(`[ExpoAuth] ${label}`, payload);
+  }, []);
+
+  const isRecoverableBootstrapError = useCallback((error) => {
+    if (isUnauthorizedApiError(error)) {
+      return false;
+    }
+
+    const status = Number(error?.response?.status || 0);
+    const code = String(error?.code || '').trim().toUpperCase();
+
+    if (!status) {
+      return true;
+    }
+
+    if ([408, 429].includes(status) || status >= 500) {
+      return true;
+    }
+
+    return ['ECONNABORTED', 'ETIMEDOUT', 'NETWORK_ERROR'].includes(code);
   }, []);
 
   const persistSession = useCallback(async (nextSession) => {
@@ -279,6 +302,8 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
 
   useEffect(() => {
     const hydrateSession = async () => {
+      let parsed = null;
+
       try {
         const startupDebugResetMarkerKey = `${authStorageKey}_debug_reset_once_done`;
 
@@ -306,7 +331,7 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
           }
         }
 
-        const parsed = await loadStoredSession();
+        parsed = await loadStoredSession();
         logAuthDebug('storage read', {
           hasStoredSession: Boolean(parsed?.accessToken),
         });
@@ -346,6 +371,34 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
         setSessionState(nextSession);
         await persistSession(nextSession);
       } catch (error) {
+        const recoverableError =
+          Boolean(parsed?.accessToken) && isRecoverableBootstrapError(error);
+
+        if (recoverableError) {
+          try {
+            const fallbackSession = enforceAllowedRole(parsed);
+            setApiAccessToken(fallbackSession?.accessToken || null);
+            setSessionState(fallbackSession);
+            await persistSession(fallbackSession);
+            logAuthDebug('bootstrap validation deferred', {
+              reason: 'recoverable_validation_error',
+              status: error?.response?.status ?? null,
+              code: error?.response?.data?.code || error?.code || null,
+              message: error?.response?.data?.message || error?.message || 'Unknown error',
+            });
+            return;
+          } catch (restoreError) {
+            if (AUTH_DEBUG_ENABLED) {
+              console.warn('[ExpoAuth] fallback session restore failed', {
+                message:
+                  restoreError?.response?.data?.message ||
+                  restoreError?.message ||
+                  'Unknown error',
+              });
+            }
+          }
+        }
+
         if (AUTH_DEBUG_ENABLED) {
           console.warn('[ExpoAuth] bootstrap session validation failed', {
             message: error?.response?.data?.message || error?.message || 'Unknown error',
@@ -368,6 +421,7 @@ export const AuthProvider = ({ children, validateStoredSession }) => {
     clearPersistedSession,
     compatibilityAccessTokenStorageKey,
     enforceAllowedRole,
+    isRecoverableBootstrapError,
     loadStoredSession,
     logAuthDebug,
     persistSession,

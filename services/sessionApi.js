@@ -267,17 +267,16 @@ export const getWalletSummary = async () => {
 export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
   const chatSessionData = await getChatSessions({ page: 1, limit });
 
-  const inboxSourceItems = chatSessionData?.items || [];
-  const chatSessions = inboxSourceItems.filter((session) => getSessionRecordType(session) === 'CHAT');
+  const chatSessions = (chatSessionData?.items || []).filter(
+    (session) => getSessionRecordType(session) === 'CHAT',
+  );
 
   logSessionApi('inboxFetchedItemTypes', {
-    count: inboxSourceItems.length,
-    types: inboxSourceItems.map((session) => getSessionRecordType(session)),
+    chatCount: chatSessions.length,
+    chatTypes: chatSessions.map((session) => getSessionRecordType(session)),
   });
   logSessionApi('inboxFilteredCounts', {
-    total: inboxSourceItems.length,
     chatOnly: chatSessions.length,
-    droppedNonChat: inboxSourceItems.length - chatSessions.length,
   });
 
   const messageHistoryEntries = await Promise.all(
@@ -293,39 +292,41 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
 
   const messageHistoryBySessionId = Object.fromEntries(messageHistoryEntries);
 
-  const chatItems = chatSessions.map((session) => {
-    const participant = resolveSessionParticipant(session, currentUserId);
-    const messages = messageHistoryBySessionId[session.id] || [];
-    const lastMessage = messages[messages.length - 1] || null;
-    const unreadCount = messages.filter(
-      (message) => message?.receiverId === currentUserId && message?.status !== 'READ',
-    ).length;
-    const preview = lastMessage?.content || getChatFallbackPreview(session.status);
-    const timestamp =
-      lastMessage?.createdAt ||
-      session.updatedAt ||
-      session.endedAt ||
-      session.startedAt ||
-      session.requestedAt ||
-      session.createdAt;
+  const chatItems = chatSessions
+    .map((session) => {
+      const participant = resolveSessionParticipant(session, currentUserId);
+      const messages = messageHistoryBySessionId[session.id] || [];
+      const lastMessage = messages[messages.length - 1] || null;
+      const unreadCount = messages.filter(
+        (message) => message?.receiverId === currentUserId && message?.status !== 'READ',
+      ).length;
+      const preview = lastMessage?.content || getChatFallbackPreview(session.status);
+      const timestamp =
+        lastMessage?.createdAt ||
+        session.updatedAt ||
+        session.endedAt ||
+        session.startedAt ||
+        session.requestedAt ||
+        session.createdAt;
 
-    return {
-      id: `chat-${session.id}`,
-      type: 'chat',
-      session,
-      participant: {
-        id: participant?.id || session.listenerId || session.userId,
-        name: participant?.displayName || 'Conversation',
-        profileImageUrl: participant?.profileImageUrl || null,
-      },
-      preview,
-      unreadCount,
-      timestamp,
-      sortAt: toTimestamp(timestamp),
-      status: session.status,
-      hasMessages: messages.length > 0,
-    };
-  });
+      return {
+        id: `chat-${session.id}`,
+        type: 'chat',
+        session,
+        participant: {
+          id: participant?.id || session.listenerId || session.userId,
+          name: participant?.displayName || 'Conversation',
+          profileImageUrl: participant?.profileImageUrl || null,
+        },
+        preview,
+        unreadCount,
+        timestamp,
+        sortAt: toTimestamp(timestamp),
+        status: session.status,
+        hasMessages: messages.length > 0,
+      };
+    })
+    .filter((item) => item.hasMessages);
 
   const finalItems = chatItems
     .sort((left, right) => right.sortAt - left.sortAt)
@@ -334,6 +335,8 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
   logSessionApi('inboxFinalCounts', {
     returned: finalItems.length,
     returnedTypes: finalItems.map((item) => item.type),
+    withChatMessages: chatItems.length,
+    withCallHistory: 0,
   });
 
   return finalItems;

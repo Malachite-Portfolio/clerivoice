@@ -5,6 +5,7 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { AUTH_DEBUG_ENABLED, EXPO_PUSH_PROJECT_ID } from '../constants/api';
 import { getCurrentRouteSnapshot } from '../navigation/navigationRef';
+import { isConversationMuted, isUserBlocked } from './chatInteractionPrefs';
 
 let currentAppState = AppState.currentState || 'active';
 let lastHandledNotificationId = null;
@@ -71,27 +72,104 @@ const shouldSuppressForegroundNotification = (notification) => {
   return false;
 };
 
-Notifications.setNotificationHandler({
-  handleNotification: async (notification) => {
-    const suppress = shouldSuppressForegroundNotification(notification);
+const resolveReceiverUserIdFromNotificationData = (data = {}) => {
+  const senderRole = String(data?.senderRole || '').trim().toUpperCase();
 
-    logNotificationDebug('notificationReceivedForeground', {
-      suppress,
-      type: notification?.request?.content?.data?.type || null,
-      sessionId: notification?.request?.content?.data?.sessionId || null,
-      appState: currentAppState,
-      routeName: getCurrentRouteSnapshot()?.name || null,
+  if (senderRole === 'LISTENER') {
+    return data?.userId || null;
+  }
+
+  if (senderRole === 'USER') {
+    return data?.listenerId || null;
+  }
+
+  return data?.receiverId || data?.userId || data?.listenerId || null;
+};
+
+const shouldSuppressByInteractionPreferences = async (notification) => {
+  const data = notification?.request?.content?.data || {};
+  const normalizedType = String(data?.type || '').trim().toLowerCase();
+
+  if (normalizedType === 'chat_message') {
+    const currentUserId = resolveReceiverUserIdFromNotificationData(data);
+    const counterpartyId = data?.senderId || null;
+    if (!currentUserId || !counterpartyId) {
+      return false;
+    }
+
+    const muted = await isConversationMuted({
+      currentUserId,
+      counterpartyId,
     });
 
-    return {
-      shouldShowAlert: !suppress,
-      shouldShowBanner: !suppress,
-      shouldShowList: !suppress,
-      shouldPlaySound: !suppress,
-      shouldSetBadge: false,
-    };
-  },
-});
+    if (muted) {
+      logNotificationDebug('notificationSuppressedByMute', {
+        currentUserId,
+        counterpartyId,
+        type: normalizedType,
+        sessionId: data?.sessionId || null,
+      });
+    }
+
+    return muted;
+  }
+
+  if (normalizedType === 'incoming_call') {
+    const requesterId = data?.requesterId || null;
+    const currentUserId = data?.listenerId || null;
+    if (!currentUserId || !requesterId) {
+      return false;
+    }
+
+    const blocked = await isUserBlocked({
+      currentUserId,
+      counterpartyId: requesterId,
+    });
+
+    if (blocked) {
+      logNotificationDebug('notificationSuppressedByBlock', {
+        currentUserId,
+        counterpartyId: requesterId,
+        type: normalizedType,
+        sessionId: data?.sessionId || null,
+      });
+    }
+
+    return blocked;
+  }
+
+  return false;
+};
+
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async (notification) => {
+      const suppress = shouldSuppressForegroundNotification(notification);
+      const suppressByPrefs = await shouldSuppressByInteractionPreferences(notification);
+      const shouldSuppress = suppress || suppressByPrefs;
+
+      logNotificationDebug('notificationReceivedForeground', {
+        suppress: shouldSuppress,
+        type: notification?.request?.content?.data?.type || null,
+        sessionId: notification?.request?.content?.data?.sessionId || null,
+        appState: currentAppState,
+        routeName: getCurrentRouteSnapshot()?.name || null,
+      });
+
+      return {
+        shouldShowAlert: !shouldSuppress,
+        shouldShowBanner: !shouldSuppress,
+        shouldShowList: !shouldSuppress,
+        shouldPlaySound: !shouldSuppress,
+        shouldSetBadge: false,
+      };
+    },
+  });
+} catch (error) {
+  logNotificationDebug('notificationHandlerSetupFailed', {
+    message: error?.message || 'Unknown error',
+  });
+}
 
 const buildChatNavigationIntent = (data) => {
   const senderId = data?.senderId || null;

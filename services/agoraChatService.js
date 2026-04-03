@@ -1,29 +1,71 @@
-import {
-  ChatClient,
-  ChatMessage,
-  ChatMessageChatType,
-  ChatOptions,
-} from 'react-native-agora-chat';
+import { AUTH_DEBUG_ENABLED } from '../constants/api';
 
-const chatClient = ChatClient.getInstance();
+let agoraChatSdk = null;
+let agoraChatLoadError = null;
 
+try {
+  agoraChatSdk = require('react-native-agora-chat');
+} catch (error) {
+  agoraChatLoadError = error;
+}
+
+const ChatClient = agoraChatSdk?.ChatClient || null;
+const ChatMessage = agoraChatSdk?.ChatMessage || null;
+const ChatMessageChatType = agoraChatSdk?.ChatMessageChatType || {
+  PeerChat: 0,
+};
+const ChatOptions = agoraChatSdk?.ChatOptions || null;
+
+let chatClient = null;
 let isInitialized = false;
 let connectionListener = null;
 let messageListener = null;
 let activeUserId = null;
 
+const logAgoraChat = (label, payload) => {
+  if (!AUTH_DEBUG_ENABLED) {
+    return;
+  }
+
+  console.log(`[AgoraChat] ${label}`, payload);
+};
+
+const isAgoraChatNativeAvailable = () =>
+  Boolean(ChatClient && ChatMessage && ChatOptions);
+
+const createNativeUnavailableError = () => {
+  const error = new Error(
+    'Agora chat native module is unavailable. Verify release native linking and app initialization.',
+  );
+  error.code = 'AGORA_CHAT_NATIVE_UNAVAILABLE';
+  return error;
+};
+
+const getChatClient = () => {
+  if (!isAgoraChatNativeAvailable()) {
+    return null;
+  }
+
+  if (!chatClient) {
+    chatClient = ChatClient.getInstance();
+  }
+
+  return chatClient;
+};
+
 const clearChatListeners = () => {
-  if (!isInitialized) {
+  const client = getChatClient();
+  if (!isInitialized || !client) {
     return;
   }
 
   if (connectionListener) {
-    chatClient.removeConnectionListener(connectionListener);
+    client.removeConnectionListener(connectionListener);
     connectionListener = null;
   }
 
   if (messageListener) {
-    chatClient.chatManager.removeMessageListener(messageListener);
+    client.chatManager.removeMessageListener(messageListener);
     messageListener = null;
   }
 };
@@ -40,8 +82,27 @@ export const initAgoraChatSession = async ({
     return { connected: false, reason: 'MISSING_CHAT_CONFIG' };
   }
 
+  if (!isAgoraChatNativeAvailable()) {
+    logAgoraChat('nativeUnavailable', {
+      hasChatClient: Boolean(ChatClient),
+      hasChatMessage: Boolean(ChatMessage),
+      hasChatOptions: Boolean(ChatOptions),
+      message: agoraChatLoadError?.message || null,
+    });
+    return {
+      connected: false,
+      reason: 'AGORA_CHAT_NATIVE_UNAVAILABLE',
+      message: agoraChatLoadError?.message || null,
+    };
+  }
+
+  const client = getChatClient();
+  if (!client) {
+    return { connected: false, reason: 'AGORA_CHAT_NATIVE_UNAVAILABLE' };
+  }
+
   if (!isInitialized) {
-    await chatClient.init(
+    await client.init(
       new ChatOptions({
         appKey,
         autoLogin: false,
@@ -55,7 +116,7 @@ export const initAgoraChatSession = async ({
 
   if (activeUserId && activeUserId !== normalizedUserId) {
     try {
-      await chatClient.logout(false);
+      await client.logout(false);
     } catch (_error) {
       // Ignore stale session logout errors.
     }
@@ -67,23 +128,28 @@ export const initAgoraChatSession = async ({
     onTokenWillExpire: () => onTokenWillExpire?.(),
     onTokenDidExpire: () => onTokenDidExpire?.(),
   };
-  chatClient.addConnectionListener(connectionListener);
+  client.addConnectionListener(connectionListener);
 
   messageListener = {
     onMessagesReceived: (messages) => {
       onMessagesReceived?.(messages || []);
     },
   };
-  chatClient.chatManager.addMessageListener(messageListener);
+  client.chatManager.addMessageListener(messageListener);
 
-  await chatClient.loginWithToken(normalizedUserId, String(token));
+  await client.loginWithToken(normalizedUserId, String(token));
   activeUserId = normalizedUserId;
 
   return { connected: true };
 };
 
 export const sendAgoraTextMessage = async ({ targetUserId, text }) => {
-  if (!isInitialized) {
+  if (!isAgoraChatNativeAvailable()) {
+    throw createNativeUnavailableError();
+  }
+
+  const client = getChatClient();
+  if (!isInitialized || !client) {
     throw new Error('Agora chat is not initialized.');
   }
 
@@ -93,7 +159,7 @@ export const sendAgoraTextMessage = async ({ targetUserId, text }) => {
     ChatMessageChatType.PeerChat,
   );
 
-  await chatClient.chatManager.sendMessage(message);
+  await client.chatManager.sendMessage(message);
   return message;
 };
 
@@ -101,18 +167,25 @@ export const renewAgoraChatToken = async (token) => {
   if (!isInitialized || !token) {
     return;
   }
-  await chatClient.renewAgoraToken(String(token));
+
+  const client = getChatClient();
+  if (!client) {
+    return;
+  }
+
+  await client.renewAgoraToken(String(token));
 };
 
 export const leaveAgoraChatSession = async () => {
-  if (!isInitialized) {
+  const client = getChatClient();
+  if (!isInitialized || !client) {
     return;
   }
 
   clearChatListeners();
 
   try {
-    await chatClient.logout(false);
+    await client.logout(false);
   } catch (_error) {
     // Ignore logout errors during screen teardown.
   } finally {

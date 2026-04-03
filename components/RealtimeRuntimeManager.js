@@ -608,6 +608,29 @@ const RealtimeRuntimeManager = () => {
         appState,
       });
 
+      if (
+        isListenerApp &&
+        !session?.isDemoUser &&
+        String(session?.user?.role || '').trim().toUpperCase() === 'LISTENER'
+      ) {
+        const socket = getRealtimeSocket();
+        if (socket) {
+          if (appState === 'active') {
+            socket.emit('listener_online');
+            logRealtimeRuntime('listenerPresenceEmit', {
+              status: 'ONLINE',
+              reason: 'app_foreground',
+            });
+          } else if (!activeCall?.sessionId) {
+            socket.emit('listener_offline');
+            logRealtimeRuntime('listenerPresenceEmit', {
+              status: 'OFFLINE',
+              reason: 'app_background_no_active_call',
+            });
+          }
+        }
+      }
+
       if (appState === 'active' && previousState !== 'active') {
         restoreActiveCallSession('app_resume').catch(() => {});
       }
@@ -616,7 +639,13 @@ const RealtimeRuntimeManager = () => {
     return () => {
       subscription.remove();
     };
-  }, [restoreActiveCallSession]);
+  }, [
+    activeCall?.sessionId,
+    isListenerApp,
+    restoreActiveCallSession,
+    session?.isDemoUser,
+    session?.user?.role,
+  ]);
 
   useEffect(() => {
     const onUrlEvent = ({ url }) => {
@@ -660,19 +689,27 @@ const RealtimeRuntimeManager = () => {
   }, [handleNavigationIntent]);
 
   useEffect(() => {
-    const unsubscribe = registerNotificationListeners({
-      onNotificationReceived: (notification) => {
-        const data = notification?.request?.content?.data || {};
+    let unsubscribe = () => {};
 
-        logRealtimeRuntime('notificationReceived', {
-          type: data?.type || null,
-          sessionId: data?.sessionId || null,
-        });
+    try {
+      unsubscribe = registerNotificationListeners({
+        onNotificationReceived: (notification) => {
+          const data = notification?.request?.content?.data || {};
 
-        showForegroundChatBanner(notification);
-      },
-      onNotificationResponse: handleNavigationIntent,
-    });
+          logRealtimeRuntime('notificationReceived', {
+            type: data?.type || null,
+            sessionId: data?.sessionId || null,
+          });
+
+          showForegroundChatBanner(notification);
+        },
+        onNotificationResponse: handleNavigationIntent,
+      });
+    } catch (error) {
+      logRealtimeRuntime('notificationListenerSetupFailed', {
+        message: error?.message || 'Unknown error',
+      });
+    }
 
     return () => {
       unsubscribe();
