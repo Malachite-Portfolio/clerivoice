@@ -49,7 +49,9 @@ const RenderModeType = agoraRtcUiModule?.RenderModeType || {
 const VideoSourceType = agoraRtcUiModule?.VideoSourceType || {
   VideoSourceCameraPrimary: 0,
 };
+const RtcTextureView = agoraRtcUiModule?.RtcTextureView || null;
 const RtcSurfaceView = agoraRtcUiModule?.RtcSurfaceView || null;
+const hasAgoraRtcTextureView = Boolean(RtcTextureView);
 const hasAgoraRtcSurfaceView = Boolean(RtcSurfaceView);
 
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
@@ -2054,9 +2056,19 @@ const CallSessionScreen = ({ navigation, route }) => {
               )}
               {isCameraEnabled ? (
                 <View style={styles.localPreviewContainer}>
-                  {hasAgoraRtcSurfaceView ? (
+                  {hasAgoraRtcTextureView ? (
+                    <RtcTextureView
+                      key={`local-preview-texture-${sessionId || 'unknown'}-${localPreviewSurfaceVersion}`}
+                      style={styles.localPreviewSurface}
+                      canvas={{
+                        uid: 0,
+                        renderMode: RenderModeType.RenderModeHidden,
+                        sourceType: VideoSourceType.VideoSourceCameraPrimary,
+                      }}
+                    />
+                  ) : hasAgoraRtcSurfaceView ? (
                     <RtcSurfaceView
-                      key={`local-preview-${sessionId || 'unknown'}-${localPreviewSurfaceVersion}`}
+                      key={`local-preview-surface-${sessionId || 'unknown'}-${localPreviewSurfaceVersion}`}
                       style={styles.localPreviewSurface}
                       zOrderOnTop
                       zOrderMediaOverlay
@@ -2243,7 +2255,7 @@ const styles = StyleSheet.create({
     right: 14,
     width: 112,
     height: 152,
-    borderRadius: 16,
+    borderRadius: 20,
     overflow: 'hidden',
     borderWidth: 1.5,
     borderColor: 'rgba(255,255,255,0.45)',
@@ -2252,6 +2264,7 @@ const styles = StyleSheet.create({
   localPreviewSurface: {
     width: '100%',
     height: '100%',
+    borderRadius: 20,
   },
   localPreviewOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -2265,7 +2278,7 @@ const styles = StyleSheet.create({
     right: 14,
     width: 112,
     height: 152,
-    borderRadius: 16,
+    borderRadius: 20,
     overflow: 'hidden',
     borderWidth: 1.5,
     borderColor: 'rgba(255,255,255,0.35)',
