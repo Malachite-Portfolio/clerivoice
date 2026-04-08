@@ -238,10 +238,10 @@ const styles = StyleSheet.create({
     paddingBottom: 28,
   },
   inputCard: {
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: 'rgba(255,42,163,0.35)',
-    backgroundColor: 'rgba(25,13,35,0.96)',
+    backgroundColor: 'rgba(20,14,31,0.96)',
     padding: 18,
   },
   sectionTitle: {
@@ -262,7 +262,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
     backgroundColor: 'rgba(255,255,255,0.04)',
@@ -272,7 +272,7 @@ const styles = StyleSheet.create({
   },
   applyButton: {
     minWidth: 92,
-    borderRadius: 18,
+    borderRadius: 20,
     backgroundColor: theme.colors.magenta,
     alignItems: 'center',
     justifyContent: 'center',
@@ -301,10 +301,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   couponCard: {
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(23,13,34,0.96)',
+    backgroundColor: 'rgba(19,13,28,0.96)',
     padding: 16,
   },
   couponBadge: {

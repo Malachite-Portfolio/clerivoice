@@ -62,15 +62,25 @@ const resolveSessionParticipant = (session, currentUserId) => {
     return null;
   }
 
+  const listenerParticipant = session.listener
+    ? {
+        ...session.listener,
+        availability:
+          session.listener?.listenerProfile?.availability ||
+          session.listener?.availability ||
+          null,
+      }
+    : null;
+
   if (currentUserId && session.userId === currentUserId) {
-    return session.listener || null;
+    return listenerParticipant || null;
   }
 
   if (currentUserId && session.listenerId === currentUserId) {
     return session.user || null;
   }
 
-  return session.listener || session.user || null;
+  return listenerParticipant || session.user || null;
 };
 
 const getChatFallbackPreview = (status) => {
@@ -484,6 +494,7 @@ export const getInboxItems = async ({ currentUserId, limit = 12 } = {}) => {
           id: participant?.id || session.listenerId || session.userId,
           name: participant?.displayName || 'Conversation',
           profileImageUrl: participant?.profileImageUrl || null,
+          availability: participant?.availability || null,
         },
         preview,
         unreadCount,

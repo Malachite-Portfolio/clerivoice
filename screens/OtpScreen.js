@@ -1,24 +1,38 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import theme from '../constants/theme';
-import { AUTH_DEBUG_ENABLED, API_BASE_URL } from '../constants/api';
-import { sendOtp, USER_AUTH_ENDPOINTS, verifyOtp } from '../services/userAuthApi';
-import { useAuth } from '../context/AuthContext';
-import AppLogo from '../components/AppLogo';
-import { getHomeRouteName } from '../navigation/navigationRef';
-import { toIndianE164 } from '../services/authPhone';
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
+import { StatusBar } from "expo-status-bar";
+import { Ionicons } from "@expo/vector-icons";
+import theme from "../constants/theme";
+import { APP_FLAVOR, AUTH_DEBUG_ENABLED } from "../constants/api";
+import { useAuth } from "../context/AuthContext";
+import AppLogo from "../components/AppLogo";
+import { getHomeRouteName } from "../navigation/navigationRef";
+import { toIndianE164 } from "../services/authPhone";
+import { sendFirebaseOtp, verifyFirebaseOtpCode } from "../services/firebasePhoneAuth";
+import { loginWithFirebaseIdentity } from "../services/firebaseLoginApi";
+import { getMyProfile } from "../services/profileApi";
+import {
+  clearListenerOnboardingCompleteMark,
+  isListenerOnboardingMarkedComplete,
+  isListenerProfileComplete,
+} from "../services/listenerOnboardingStatus";
+import {
+  getBackendFirebaseLoginErrorMessage,
+  getFirebaseAuthErrorCode,
+  getFirebaseAuthErrorMessage,
+} from "../services/firebaseAuthErrorMessage";
 
 const OTP_LENGTH = 6;
 
@@ -31,16 +45,24 @@ const logOtpDebug = (label, payload) => {
 };
 
 const OtpScreen = ({ navigation, route }) => {
-  const phone = toIndianE164(route?.params?.phone || '+910000000000');
+  const phone = toIndianE164(route?.params?.phone || "+910000000000");
+  const requestedRole = String(route?.params?.role || APP_FLAVOR || "user")
+    .trim()
+    .toLowerCase();
+  const role = requestedRole === "listener" ? "listener" : "user";
+  const initialVerificationId = String(route?.params?.verificationId || "").trim();
+  const initialConfirmation = route?.params?.confirmation || null;
   const { setSession } = useAuth();
 
-  const [otp, setOtp] = useState(Array(OTP_LENGTH).fill(''));
-  const [error, setError] = useState('');
+  const [otp, setOtp] = useState(Array(OTP_LENGTH).fill(""));
+  const [verificationId, setVerificationId] = useState(initialVerificationId);
+  const [confirmation, setConfirmation] = useState(initialConfirmation);
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const inputRefs = useRef([]);
   const [focusedIndex, setFocusedIndex] = useState(0);
 
-  const fullOtp = useMemo(() => otp.join(''), [otp]);
+  const fullOtp = useMemo(() => otp.join(""), [otp]);
   const isComplete = useMemo(() => fullOtp.length === OTP_LENGTH, [fullOtp]);
 
   useEffect(() => {
@@ -51,14 +73,35 @@ const OtpScreen = ({ navigation, route }) => {
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    if (!route?.params?.verificationId) {
+      return;
+    }
+
+    const nextVerificationId = String(route.params.verificationId).trim();
+    if (!nextVerificationId) {
+      return;
+    }
+
+    setVerificationId(nextVerificationId);
+  }, [route?.params?.verificationId]);
+
+  useEffect(() => {
+    if (!route?.params?.confirmation) {
+      return;
+    }
+
+    setConfirmation(route.params.confirmation);
+  }, [route?.params?.confirmation]);
+
   const handleOtpChange = (value, index) => {
-    const numeric = value.replace(/[^0-9]/g, '');
+    const numeric = value.replace(/[^0-9]/g, "");
     const updated = [...otp];
     updated[index] = numeric.slice(-1);
     setOtp(updated);
 
     if (error) {
-      setError('');
+      setError("");
     }
 
     if (numeric && index < OTP_LENGTH - 1) {
@@ -69,7 +112,7 @@ const OtpScreen = ({ navigation, route }) => {
   };
 
   const handleBackspace = (key, index) => {
-    if (key === 'Backspace' && !otp[index] && index > 0) {
+    if (key === "Backspace" && !otp[index] && index > 0) {
       const prevIndex = index - 1;
       inputRefs.current[prevIndex]?.focus();
       setFocusedIndex(prevIndex);
@@ -78,58 +121,129 @@ const OtpScreen = ({ navigation, route }) => {
 
   const handleVerify = async () => {
     if (!isComplete) {
-      setError('Please enter all 6 digits.');
+      setError("Please enter all 6 digits.");
+      return;
+    }
+
+    if (!verificationId && !confirmation) {
+      const message = "OTP session expired. Please resend OTP.";
+      setError(message);
+      Alert.alert("OTP Verification Failed", message);
       return;
     }
 
     setLoading(true);
-    setError('');
+    setError("");
+
+    logOtpDebug("verifyOtpRequestStarted", {
+      phone,
+      role,
+      otpLength: fullOtp.length,
+      hasVerificationId: Boolean(verificationId),
+      hasConfirmation: Boolean(confirmation),
+    });
+
     try {
-      logOtpDebug('verifyOtpStart', {
+      const firebaseVerification = await verifyFirebaseOtpCode({
+        verificationId,
+        code: fullOtp,
+        confirmation,
+      });
+      const firebaseUid = String(firebaseVerification?.firebaseUid || "").trim();
+
+      logOtpDebug("firebaseVerifyOtpSuccess", {
         phone,
-        otpLength: fullOtp.length,
-        otpVerifyEndpointCalled: USER_AUTH_ENDPOINTS.verifyOtp,
-        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.verifyOtp}`,
+        role,
+        firebaseUid,
+        hasFirebaseUid: Boolean(firebaseUid),
       });
 
-      const response = await verifyOtp({
+      try {
+        logOtpDebug("backendFirebaseLoginRequestStarted", {
+          phone,
+          role,
+          firebaseUid,
+        });
+
+        const response = await loginWithFirebaseIdentity({
+          phone,
+          firebaseUid,
+          role,
+        });
+
+        logOtpDebug("backendFirebaseLoginSuccess", {
+          phone,
+          role,
+          firebaseUid,
+          userId: response?.user?.id || null,
+          resolvedRole: response?.user?.role || null,
+          hasAccessToken: Boolean(response?.accessToken),
+        });
+
+        await setSession({
+          user: response.user,
+          accessToken: response.accessToken,
+          refreshToken: response.refreshToken,
+        });
+
+        if (role === "listener") {
+          let shouldNavigateToOnboarding = false;
+          try {
+            const listenerProfile = await getMyProfile();
+            const isComplete = isListenerProfileComplete(listenerProfile || response?.user || {});
+            const markedComplete = await isListenerOnboardingMarkedComplete();
+            shouldNavigateToOnboarding = !isComplete && !markedComplete;
+          } catch (profileError) {
+            logOtpDebug("listenerProfileCompletenessCheckFailure", {
+              phone,
+              role,
+              message: profileError?.message || "Unknown error",
+            });
+            const markedComplete = await isListenerOnboardingMarkedComplete();
+            shouldNavigateToOnboarding = !markedComplete;
+          }
+
+          if (shouldNavigateToOnboarding) {
+            await clearListenerOnboardingCompleteMark();
+            navigation.reset({
+              index: 0,
+              routes: [{ name: "ListenerOnboarding" }],
+            });
+            return;
+          }
+        }
+
+        navigation.reset({
+          index: 0,
+          routes: [{ name: getHomeRouteName() }],
+        });
+      } catch (backendError) {
+        logOtpDebug("backendFirebaseLoginFailure", {
+          phone,
+          role,
+          firebaseUid,
+          status: backendError?.response?.status ?? null,
+          responseBody: backendError?.response?.data ?? null,
+          message: backendError?.message || "Unknown error",
+        });
+
+        const backendMessage = getBackendFirebaseLoginErrorMessage(backendError);
+        setError(backendMessage);
+        Alert.alert("Login Failed", backendMessage);
+      }
+    } catch (firebaseError) {
+      logOtpDebug("firebaseVerifyOtpFailure", {
         phone,
-        otp: fullOtp,
-        displayName: `Anonymous-${phone.slice(-4)}`,
+        role,
+        code: getFirebaseAuthErrorCode(firebaseError),
+        message: firebaseError?.message || "Unknown error",
       });
 
-      logOtpDebug('verifyOtpSuccess', {
-        phone,
-        userId: response?.user?.id || null,
-        role: response?.user?.role || null,
-        hasAccessToken: Boolean(response?.accessToken),
+      const message = getFirebaseAuthErrorMessage(firebaseError, {
+        action: "verify",
       });
-
-      await setSession({
-        user: response.user,
-        accessToken: response.accessToken,
-        refreshToken: response.refreshToken,
-      });
-
-      navigation.reset({
-        index: 0,
-        routes: [{ name: getHomeRouteName() }],
-      });
-    } catch (apiError) {
-      logOtpDebug('verifyOtpFailure', {
-        phone,
-        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.verifyOtp}`,
-        status: apiError?.response?.status ?? null,
-        responseBody: apiError?.response?.data ?? null,
-        backendErrorResponseBody: apiError?.response?.data ?? null,
-        message: apiError?.message || 'Unknown error',
-      });
-
-      const message =
-        apiError?.response?.data?.message ||
-        'Unable to verify OTP right now. Please try again.';
       setError(message);
-      Alert.alert('OTP Verification Failed', message);
+      Alert.alert("OTP Verification Failed", message);
     } finally {
       setLoading(false);
     }
@@ -137,122 +251,138 @@ const OtpScreen = ({ navigation, route }) => {
 
   const handleResend = async () => {
     try {
-      logOtpDebug('resendOtpStart', {
+      const resendResponse = await sendFirebaseOtp(phone);
+      setVerificationId(String(resendResponse?.verificationId || "").trim());
+      setConfirmation(resendResponse?.confirmation || null);
+
+      logOtpDebug("firebaseSendOtpSuccess", {
         phone,
-        otpSendEndpointCalled: USER_AUTH_ENDPOINTS.sendOtp,
-        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.sendOtp}`,
-      });
-      await sendOtp(phone);
-      logOtpDebug('resendOtpSuccess', {
-        phone,
-      });
-      setOtp(Array(OTP_LENGTH).fill(''));
-      setError('');
-      inputRefs.current[0]?.focus();
-      setFocusedIndex(0);
-    } catch (apiError) {
-      logOtpDebug('resendOtpFailure', {
-        phone,
-        finalApiUrl: `${API_BASE_URL}${USER_AUTH_ENDPOINTS.sendOtp}`,
-        status: apiError?.response?.status ?? null,
-        responseBody: apiError?.response?.data ?? null,
-        backendErrorResponseBody: apiError?.response?.data ?? null,
-        message: apiError?.message || 'Unknown error',
+        role,
+        verificationIdReceived: Boolean(resendResponse?.verificationId),
       });
 
-      const message =
-        apiError?.response?.data?.message ||
-        'Unable to resend OTP right now. Please try again.';
+      setOtp(Array(OTP_LENGTH).fill(""));
+      setError("");
+      inputRefs.current[0]?.focus();
+      setFocusedIndex(0);
+    } catch (firebaseError) {
+      logOtpDebug("firebaseSendOtpFailure", {
+        phone,
+        role,
+        code: getFirebaseAuthErrorCode(firebaseError),
+        message: firebaseError?.message || "Unknown error",
+      });
+
+      const message = getFirebaseAuthErrorMessage(firebaseError, {
+        action: "send",
+      });
       setError(message);
-      Alert.alert('OTP Resend Failed', message);
+      Alert.alert("OTP Resend Failed", message);
     }
   };
 
   return (
-    <LinearGradient
-      colors={['#05020D', '#070113', '#0B031A', '#130322']}
-      locations={[0, 0.35, 0.72, 1]}
-      style={styles.container}
-    >
-      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+    <LinearGradient colors={theme.gradients.bg} style={styles.container}>
+      <StatusBar style="light" />
+      <SafeAreaView
+        style={styles.safeArea}
+        edges={["top", "left", "right", "bottom"]}
+      >
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
         >
           <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-            activeOpacity={0.8}
+            activeOpacity={1}
+            style={styles.touchLayer}
+            onPress={Keyboard.dismiss}
           >
-            <Ionicons
-              name="chevron-back"
-              size={24}
-              color={theme.colors.textPrimary}
-            />
-          </TouchableOpacity>
-
-          <AppLogo size="md" style={styles.logoCard} />
-
-          <Text style={styles.heading}>Verify OTP</Text>
-          <Text style={styles.subtitle}>Enter the 6-digit code sent to {phone}</Text>
-
-          <View style={styles.otpRow}>
-            {otp.map((digit, index) => {
-              const isFocused = focusedIndex === index;
-              const hasError = !!error;
-
-              return (
-                <TextInput
-                  key={`otp-${index}`}
-                  ref={(ref) => {
-                    inputRefs.current[index] = ref;
-                  }}
-                  value={digit}
-                  onChangeText={(value) => handleOtpChange(value, index)}
-                  onKeyPress={({ nativeEvent }) =>
-                    handleBackspace(nativeEvent.key, index)
-                  }
-                  onFocus={() => setFocusedIndex(index)}
-                  keyboardType="number-pad"
-                  maxLength={1}
-                  style={[
-                    styles.otpInput,
-                    digit ? styles.otpInputFilled : null,
-                    isFocused ? styles.otpInputFocused : null,
-                    hasError ? styles.otpInputError : null,
-                  ]}
-                  selectionColor={theme.colors.magenta}
-                />
-              );
-            })}
-          </View>
-
-          <TouchableOpacity
-            onPress={handleResend}
-            activeOpacity={0.8}
-            style={styles.resendWrap}
-          >
-            <Text style={styles.resendText}>Resend code</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={handleVerify}
-            activeOpacity={0.86}
-            style={[styles.buttonShell, loading && styles.buttonShellDisabled]}
-          >
-            <LinearGradient
-              colors={['#1A1132', '#2C1842']}
-              start={{ x: 0, y: 0.5 }}
-              end={{ x: 1, y: 0.5 }}
-              style={styles.buttonGradient}
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => navigation.goBack()}
+              activeOpacity={0.8}
             >
-              <Text style={[styles.buttonLabel, loading && styles.buttonLabelDisabled]}>
-                {loading ? 'Verifying...' : 'Verify'}
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
+              <Ionicons
+                name="chevron-back"
+                size={24}
+                color={theme.colors.textPrimary}
+              />
+            </TouchableOpacity>
 
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+            <AppLogo size="md" style={styles.logoCard} />
+
+            <Text style={styles.heading}>Verify OTP</Text>
+            <Text style={styles.subtitle}>
+              Enter the 6-digit code sent to {phone}
+            </Text>
+
+            <View style={styles.otpRow}>
+              {otp.map((digit, index) => {
+                const isFocused = focusedIndex === index;
+                const hasError = !!error;
+
+                return (
+                  <TextInput
+                    key={`otp-${index}`}
+                    ref={(ref) => {
+                      inputRefs.current[index] = ref;
+                    }}
+                    value={digit}
+                    onChangeText={(value) => handleOtpChange(value, index)}
+                    onKeyPress={({ nativeEvent }) =>
+                      handleBackspace(nativeEvent.key, index)
+                    }
+                    onFocus={() => setFocusedIndex(index)}
+                    keyboardType="number-pad"
+                    maxLength={1}
+                    style={[
+                      styles.otpInput,
+                      digit ? styles.otpInputFilled : null,
+                      isFocused ? styles.otpInputFocused : null,
+                      hasError ? styles.otpInputError : null,
+                    ]}
+                    selectionColor={theme.colors.magenta}
+                  />
+                );
+              })}
+            </View>
+
+            <TouchableOpacity
+              onPress={handleResend}
+              activeOpacity={0.8}
+              style={styles.resendWrap}
+            >
+              <Text style={styles.resendText}>Resend code</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleVerify}
+              activeOpacity={0.86}
+              style={[
+                styles.buttonShell,
+                loading && styles.buttonShellDisabled,
+              ]}
+            >
+              <LinearGradient
+                colors={["#1A1132", "#2C1842"]}
+                start={{ x: 0, y: 0.5 }}
+                end={{ x: 1, y: 0.5 }}
+                style={styles.buttonGradient}
+              >
+                <Text
+                  style={[
+                    styles.buttonLabel,
+                    loading && styles.buttonLabelDisabled,
+                  ]}
+                >
+                  {loading ? "Verifying..." : "Verify"}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
+
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          </TouchableOpacity>
         </KeyboardAvoidingView>
       </SafeAreaView>
     </LinearGradient>
@@ -268,60 +398,64 @@ const styles = StyleSheet.create({
   },
   flex: {
     flex: 1,
-    paddingHorizontal: 22,
-    paddingTop: 4,
+    paddingHorizontal: 20,
+    paddingTop: 6,
+  },
+  touchLayer: {
+    flex: 1,
   },
   backButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    marginBottom: 20,
+    borderColor: "rgba(255,255,255,0.1)",
+    marginBottom: 14,
   },
   logoCard: {
-    alignSelf: 'flex-start',
-    marginBottom: 24,
+    alignSelf: "flex-start",
+    marginBottom: 18,
   },
   heading: {
     color: theme.colors.textPrimary,
-    fontSize: 46 / 1.6,
-    fontWeight: '700',
-    marginBottom: 8,
+    fontSize: 30,
+    fontWeight: "700",
+    marginBottom: 6,
+    letterSpacing: 0.15,
   },
   subtitle: {
-    color: 'rgba(255,255,255,0.58)',
-    fontSize: 31 / 2,
-    lineHeight: 26,
-    marginBottom: 26,
-    maxWidth: 280,
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 13,
+    lineHeight: 21,
+    marginBottom: 20,
+    maxWidth: 302,
   },
   otpRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
   },
   otpInput: {
-    width: 42,
-    height: 54,
-    borderRadius: 14,
-    backgroundColor: 'rgba(26, 20, 40, 0.78)',
+    width: 44,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: "rgba(20, 15, 31, 0.88)",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: "rgba(255,255,255,0.08)",
     color: theme.colors.textPrimary,
-    fontSize: 22,
-    fontWeight: '700',
-    textAlign: 'center',
+    fontSize: 20,
+    fontWeight: "700",
+    textAlign: "center",
   },
   otpInputFilled: {
-    borderColor: 'rgba(255, 42, 163, 0.6)',
+    borderColor: "rgba(255, 42, 163, 0.6)",
   },
   otpInputFocused: {
-    borderColor: 'rgba(255, 34, 163, 0.9)',
-    backgroundColor: 'rgba(39, 20, 48, 0.9)',
-    shadowColor: '#FF2AA3',
+    borderColor: "rgba(255, 34, 163, 0.9)",
+    backgroundColor: "rgba(39, 20, 48, 0.9)",
+    shadowColor: "#FF2AA3",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.22,
     shadowRadius: 10,
@@ -331,43 +465,44 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.error,
   },
   resendWrap: {
-    alignSelf: 'flex-end',
-    marginTop: 14,
+    alignSelf: "flex-end",
+    marginTop: 12,
   },
   resendText: {
-    color: '#FF2AA3',
-    fontSize: 31 / 2.2,
-    fontWeight: '700',
+    color: theme.colors.neonPink,
+    fontSize: 13,
+    fontWeight: "700",
   },
   buttonShell: {
-    marginTop: 26,
-    borderRadius: 30,
-    borderWidth: 1.4,
-    borderColor: 'rgba(255, 34, 163, 0.95)',
-    shadowColor: '#FF2AA3',
+    marginTop: 20,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "rgba(207, 36, 155, 0.72)",
+    shadowColor: "#D10B95",
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    elevation: 7,
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    elevation: 5,
   },
   buttonShellDisabled: {
-    borderColor: 'rgba(255, 34, 163, 0.4)',
+    borderColor: "rgba(255, 34, 163, 0.4)",
     shadowOpacity: 0.1,
     elevation: 2,
   },
   buttonGradient: {
-    height: 58,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
   },
   buttonLabel: {
-    color: '#E31A97',
-    fontSize: 17,
-    fontWeight: '700',
+    color: theme.colors.neonPink,
+    fontSize: 15,
+    fontWeight: "700",
+    letterSpacing: 0.25,
   },
   buttonLabelDisabled: {
-    color: 'rgba(227, 26, 151, 0.5)',
+    color: "rgba(227, 26, 151, 0.5)",
   },
   errorText: {
     color: theme.colors.error,

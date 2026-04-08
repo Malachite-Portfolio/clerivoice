@@ -1,4 +1,5 @@
 const trimTrailingSlash = (value = '') => value.replace(/\/+$/, '');
+export const BASE_URL = 'https://clarivoice-api-1032786255556.asia-south1.run.app';
 
 const normalizeApiBaseUrl = (rawValue) => {
   const value = rawValue?.trim();
@@ -40,7 +41,9 @@ const authClearOnStartupValue = String(process.env.EXPO_PUBLIC_AUTH_CLEAR_ON_STA
 const expoPushProjectIdValue = String(process.env.EXPO_PUBLIC_EXPO_PROJECT_ID || '')
   .trim();
 
-export const API_BASE_URL = normalizeApiBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
+const configuredApiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL || BASE_URL;
+
+export const API_BASE_URL = normalizeApiBaseUrl(configuredApiBaseUrl);
 
 export const SOCKET_BASE_URL = buildSocketBaseUrl(
   process.env.EXPO_PUBLIC_SOCKET_URL,
@@ -90,6 +93,9 @@ export const API_ENDPOINTS = {
     summary: '/wallet/summary',
     history: '/wallet/history',
     plans: '/wallet/plans',
+    withdrawalConfig: '/wallet/withdrawal/config',
+    withdrawalHistory: '/wallet/withdrawal/history',
+    withdrawalRequest: '/wallet/withdrawal/request',
     createOrder: '/wallet/create-order',
     verifyPayment: '/wallet/verify-payment',
     applyCoupon: '/wallet/apply-coupon',

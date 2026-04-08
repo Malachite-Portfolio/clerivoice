@@ -1,11 +1,28 @@
 const avatarPlaceholder = require('../assets/main/avatar-placeholder.png');
+const { API_BASE_URL } = require('../constants/api');
 
 const FALLBACK_AVATAR_VERSION = 'clarivoice-avatar-v1';
+const MEDIA_BASE_URL = String(API_BASE_URL || '')
+  .trim()
+  .replace(/\/api(?:\/v\d+)?$/i, '');
 
 const normalizeText = (value) => String(value || '').trim();
 
 const isRemoteOrLocalImageUri = (value) =>
   /^(https?:\/\/|file:\/\/|content:\/\/|data:image\/)/i.test(value);
+
+const resolveRelativeMediaUri = (value) => {
+  const normalized = normalizeText(value);
+  if (!normalized || !normalized.startsWith('/')) {
+    return '';
+  }
+
+  if (!MEDIA_BASE_URL) {
+    return '';
+  }
+
+  return `${MEDIA_BASE_URL}${normalized}`;
+};
 
 const normalizeAvatarUri = (value) => {
   const normalized = normalizeText(value);
@@ -13,7 +30,11 @@ const normalizeAvatarUri = (value) => {
     return '';
   }
 
-  return isRemoteOrLocalImageUri(normalized) ? normalized : '';
+  if (isRemoteOrLocalImageUri(normalized)) {
+    return normalized;
+  }
+
+  return resolveRelativeMediaUri(normalized);
 };
 
 const hashText = (value) => {
@@ -118,4 +139,3 @@ export const resolveAvatarSource = (input = {}) => {
 
   return avatarPlaceholder;
 };
-

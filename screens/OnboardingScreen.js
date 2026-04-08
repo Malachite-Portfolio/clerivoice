@@ -1,234 +1,394 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
+import { getHomeRouteName } from '../navigation/navigationRef';
+import { markListenerOnboardingComplete } from '../services/listenerOnboardingStatus';
 import {
-  Animated,
-  Dimensions,
-  Image,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { StatusBar } from 'expo-status-bar';
-import GradientButton from '../components/GradientButton';
-import { onboardingSlides } from '../constants/mockData';
-import theme from '../constants/theme';
+  DOBScreen,
+  DeclarationScreen,
+  EducationScreen,
+  ExperienceScreen,
+  IDUploadScreen,
+  IntroScreen,
+  JobRoleScreen,
+  LanguagesScreen,
+  NameSelectionScreen,
+  ProfileUploadScreen,
+  SubmissionSuccessScreen,
+} from './listenerOnboarding';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const DRAFT_KEY = 'clarivoice_listener_onboarding_draft_v1';
 
-const OnboardingScreen = ({ navigation }) => {
-  const scrollX = useRef(new Animated.Value(0)).current;
-  const [activeIndex, setActiveIndex] = useState(0);
+const educationOptions = [
+  'BTech, BE, MTech, ME, MCA',
+  'BCom, BBA, MCom, MBA',
+  'BAMS, BDS, Nursing, MBBS, Psychiatry',
+  'BA (Psy), MA (Psy), BSc (Psy), MSc (Psy)',
+  'Others',
+];
 
-  const onMomentumEnd = useCallback((event) => {
-    const offsetX = event.nativeEvent.contentOffset.x;
-    setActiveIndex(Math.round(offsetX / SCREEN_WIDTH));
-  }, []);
+const experiencePrimaryOptions = [
+  'Loss of a Loved One',
+  'Breakup',
+  'Divorce',
+  'Molestation',
+  'Family Conflict',
+  'Health Issues',
+];
 
-  const renderItem = ({ item }) => {
-    return (
-      <View style={[styles.slide, { width: SCREEN_WIDTH }]}>
-        <Text style={styles.title}>{item.title}</Text>
-        <Text style={styles.subtitle}>{item.subtitle}</Text>
+const experienceReasonOptions = ['Cheating', 'Constant fights', 'Dowry', 'Long distance'];
 
-        <View style={styles.illustrationShell}>
-          <Image source={item.image} style={styles.illustration} resizeMode="cover" />
-        </View>
-      </View>
-    );
-  };
+const languageOptions = [
+  'Hindi',
+  'English',
+  'Kannada',
+  'Malayalam',
+  'Tamil',
+  'Telugu',
+  'Gujarati',
+  'Punjabi',
+  'Marathi',
+  'Assamese',
+  'Bengali',
+  'Odia',
+];
 
-  return (
-    <LinearGradient colors={theme.gradients.bg} style={styles.container}>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-        <Animated.FlatList
-          data={onboardingSlides}
-          keyExtractor={(item) => item.id}
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          renderItem={renderItem}
-          bounces={false}
-          onMomentumScrollEnd={onMomentumEnd}
-          onScroll={Animated.event(
-            [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-            { useNativeDriver: false }
-          )}
-          scrollEventThrottle={16}
-          contentContainerStyle={styles.sliderContent}
-        />
+const idTypes = ['Aadhar card', 'Pan card', 'Voter ID'];
 
-        <View style={styles.paginationWrap}>
-          {onboardingSlides.map((slide, index) => {
-            const inputRange = [
-              (index - 1) * SCREEN_WIDTH,
-              index * SCREEN_WIDTH,
-              (index + 1) * SCREEN_WIDTH,
-            ];
+const allNames = [
+  'Shreya',
+  'Ananya',
+  'Meera',
+  'Riya',
+  'Kavya',
+  'Diya',
+  'Aashi',
+  'Saanvi',
+  'Naina',
+  'Siya',
+  'Aarohi',
+  'Samiksha',
+  'Ira',
+  'Vanya',
+  'Tara',
+];
 
-            const dotWidth = scrollX.interpolate({
-              inputRange,
-              outputRange: [8, 24, 8],
-              extrapolate: 'clamp',
-            });
-            const dotOpacity = scrollX.interpolate({
-              inputRange,
-              outputRange: [0.4, 1, 0.4],
-              extrapolate: 'clamp',
-            });
-
-            return (
-              <Animated.View
-                key={slide.id}
-                style={[
-                  styles.dot,
-                  {
-                    width: dotWidth,
-                    opacity: dotOpacity,
-                    backgroundColor:
-                      index === activeIndex
-                        ? theme.colors.textPrimary
-                        : 'rgba(255,255,255,0.45)',
-                  },
-                ]}
-              />
-            );
-          })}
-        </View>
-      </SafeAreaView>
-
-      <LinearGradient
-        colors={theme.gradients.panel}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.bottomPanel}
-      >
-        <Text style={styles.panelTitle}>Get Clarivoice</Text>
-
-        <GradientButton
-          title="Continue via phone"
-          iconName="phone-portrait"
-          onPress={() => navigation.navigate('PhoneNumber')}
-          gradientColors={['#0F081A', '#120A1F']}
-          style={styles.ctaButton}
-          textStyle={styles.ctaText}
-        />
-
-        <Text style={styles.policyText}>
-          By clicking i accept the T&C and Privacy Policy
-        </Text>
-
-        <TouchableOpacity
-          style={styles.listenerEntry}
-          onPress={() => navigation.navigate('ListenerLogin')}
-          activeOpacity={0.85}
-        >
-          <Text style={styles.listenerEntryText}>Listener Login</Text>
-        </TouchableOpacity>
-      </LinearGradient>
-    </LinearGradient>
-  );
+const createNamePool = () => {
+  const shuffled = [...allNames].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, 10);
 };
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  safeArea: {
-    flex: 1,
-  },
-  sliderContent: {
-    paddingBottom: 210,
-  },
-  slide: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-  },
-  title: {
-    color: theme.colors.textPrimary,
-    fontSize: 24,
-    fontWeight: '700',
-    lineHeight: 34,
-    maxWidth: 280,
-  },
-  subtitle: {
-    color: theme.colors.textSecondary,
-    fontSize: theme.typography.title,
-    marginTop: 4,
-  },
-  illustrationShell: {
-    flex: 1,
-    marginTop: 12,
-    borderRadius: 34,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-  },
-  illustration: {
-    width: SCREEN_WIDTH * 0.9,
-    height: SCREEN_HEIGHT * 0.64,
-    borderRadius: 34,
-  },
-  paginationWrap: {
-    position: 'absolute',
-    right: 20,
-    bottom: 198,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  dot: {
-    height: 7,
-    borderRadius: 4,
-  },
-  bottomPanel: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 30,
-  },
-  panelTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: theme.typography.body,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  ctaButton: {
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.borderPink,
-  },
-  ctaText: {
-    color: theme.colors.magenta,
-    fontSize: 14,
-  },
-  policyText: {
-    marginTop: 16,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  listenerEntry: {
-    marginTop: 10,
-    alignSelf: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-  },
-  listenerEntryText: {
-    color: theme.colors.textSecondary,
-    fontSize: 13,
-    textDecorationLine: 'underline',
-  },
+const createDefaultState = () => ({
+  stepIndex: 0,
+  names: createNamePool(),
+  selectedName: '',
+  dob: '',
+  selectedEducation: '',
+  experienceType: '',
+  experienceReason: '',
+  experienceNote: '',
+  selectedLanguages: [],
+  profileImageUri: '',
+  profileUploaded: false,
+  idType: idTypes[0],
+  idUploaded: false,
 });
+
+const OnboardingScreen = ({ navigation }) => {
+  const [state, setState] = useState(createDefaultState);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const hydrateDraft = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(DRAFT_KEY);
+        if (!raw) {
+          return;
+        }
+
+        const parsed = JSON.parse(raw);
+        if (!mounted || !parsed || typeof parsed !== 'object') {
+          return;
+        }
+
+        setState((prev) => ({
+          ...prev,
+          ...parsed,
+          names: Array.isArray(parsed?.names) && parsed.names.length ? parsed.names : prev.names,
+        }));
+      } catch (_error) {
+        // Ignore malformed drafts to keep onboarding resilient.
+      } finally {
+        if (mounted) {
+          setHydrated(true);
+        }
+      }
+    };
+
+    hydrateDraft();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+
+    AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(state)).catch(() => {});
+  }, [hydrated, state]);
+
+  const step = state.stepIndex;
+  const totalSteps = 10;
+  const stepNumber = Math.max(1, Math.min(step, totalSteps));
+
+  const goBack = () => {
+    if (step === 0) {
+      navigation.goBack();
+      return;
+    }
+
+    setState((prev) => ({ ...prev, stepIndex: Math.max(prev.stepIndex - 1, 0) }));
+  };
+
+  const goNext = () => {
+    setState((prev) => ({ ...prev, stepIndex: Math.min(prev.stepIndex + 1, 10) }));
+  };
+
+  const regenerateNames = () => {
+    setState((prev) => ({
+      ...prev,
+      names: createNamePool(),
+      selectedName: '',
+    }));
+  };
+
+  const toggleLanguage = (language) => {
+    setState((prev) => {
+      const exists = prev.selectedLanguages.includes(language);
+      const nextLanguages = exists
+        ? prev.selectedLanguages.filter((item) => item !== language)
+        : [...prev.selectedLanguages, language];
+      return { ...prev, selectedLanguages: nextLanguages };
+    });
+  };
+
+  const cycleIdType = () => {
+    setState((prev) => {
+      const currentIndex = idTypes.indexOf(prev.idType);
+      const nextIndex = (currentIndex + 1) % idTypes.length;
+      return { ...prev, idType: idTypes[nextIndex] };
+    });
+  };
+
+  const pickImage = async (mode = 'profile') => {
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('Permission needed', 'Please allow gallery access to continue.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        quality: 0.8,
+      });
+
+      if (result?.canceled) {
+        return;
+      }
+
+      const uri = result?.assets?.[0]?.uri || '';
+      if (!uri) {
+        return;
+      }
+
+      if (mode === 'profile') {
+        setState((prev) => ({ ...prev, profileImageUri: uri, profileUploaded: true }));
+      } else {
+        setState((prev) => ({ ...prev, idUploaded: true }));
+      }
+    } catch (_error) {
+      Alert.alert('Upload failed', 'Unable to pick image right now.');
+    }
+  };
+
+  const finish = async () => {
+    await AsyncStorage.removeItem(DRAFT_KEY);
+    await markListenerOnboardingComplete();
+    navigation.reset({
+      index: 0,
+      routes: [{ name: getHomeRouteName() }],
+    });
+  };
+
+  const screen = useMemo(() => {
+    if (step === 0) {
+      return <IntroScreen onNext={goNext} />;
+    }
+
+    if (step === 1) {
+      return (
+        <JobRoleScreen
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 2) {
+      return (
+        <NameSelectionScreen
+          options={state.names}
+          selectedName={state.selectedName}
+          onSelect={(name) => setState((prev) => ({ ...prev, selectedName: name }))}
+          onRegenerate={regenerateNames}
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 3) {
+      return (
+        <DOBScreen
+          value={state.dob}
+          onChange={(dob) => setState((prev) => ({ ...prev, dob }))}
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 4) {
+      return (
+        <DeclarationScreen
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 5) {
+      return (
+        <EducationScreen
+          options={educationOptions}
+          selectedEducation={state.selectedEducation}
+          onSelect={(selectedEducation) => setState((prev) => ({ ...prev, selectedEducation }))}
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 6) {
+      return (
+        <ExperienceScreen
+          primaryOptions={experiencePrimaryOptions}
+          reasonOptions={experienceReasonOptions}
+          experienceType={state.experienceType}
+          experienceReason={state.experienceReason}
+          experienceNote={state.experienceNote}
+          onSelectType={(experienceType) => setState((prev) => ({ ...prev, experienceType }))}
+          onSelectReason={(experienceReason) =>
+            setState((prev) => ({ ...prev, experienceReason }))
+          }
+          onChangeNote={(experienceNote) =>
+            setState((prev) => ({ ...prev, experienceNote: experienceNote.slice(0, 120) }))
+          }
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 7) {
+      return (
+        <LanguagesScreen
+          options={languageOptions}
+          selectedLanguages={state.selectedLanguages}
+          onToggle={toggleLanguage}
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 8) {
+      return (
+        <ProfileUploadScreen
+          profileImageUri={state.profileImageUri}
+          uploaded={state.profileUploaded}
+          onUploadPress={() => pickImage('profile')}
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    if (step === 9) {
+      return (
+        <IDUploadScreen
+          idType={state.idType}
+          onCycleIdType={cycleIdType}
+          uploaded={state.idUploaded}
+          onUploadPress={() => pickImage('id')}
+          onBack={goBack}
+          onNext={goNext}
+          step={stepNumber}
+          totalSteps={totalSteps}
+        />
+      );
+    }
+
+    return (
+      <SubmissionSuccessScreen
+        onBack={goBack}
+        onDone={finish}
+        step={stepNumber}
+        totalSteps={totalSteps}
+      />
+    );
+  }, [
+    step,
+    stepNumber,
+    state.dob,
+    state.experienceNote,
+    state.experienceReason,
+    state.experienceType,
+    state.idType,
+    state.idUploaded,
+    state.names,
+    state.profileImageUri,
+    state.profileUploaded,
+    state.selectedEducation,
+    state.selectedLanguages,
+    state.selectedName,
+  ]);
+
+  return screen;
+};
 
 export default OnboardingScreen;

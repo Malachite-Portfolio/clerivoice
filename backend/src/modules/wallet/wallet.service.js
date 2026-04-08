@@ -4,6 +4,7 @@ const { getPaymentProvider } = require('../../services/payment/paymentProviderFa
 const referralService = require('../referral/referral.service');
 const { AppError } = require('../../utils/appError');
 const { getSocketServer } = require('../../socket/socketStore');
+const withdrawalService = require('../withdrawal/withdrawal.service');
 
 const toNumber = (value) => Number(value || 0);
 
@@ -86,6 +87,40 @@ const getWalletPlans = async () => {
     label: plan.label,
     status: plan.status,
   }));
+};
+
+const getWithdrawalConfig = async (userId) => {
+  return withdrawalService.getListenerWithdrawalConfig(userId);
+};
+
+const getWithdrawalHistory = async (userId, params = {}) => {
+  return withdrawalService.listListenerWithdrawals(userId, params);
+};
+
+const getWithdrawalById = async ({ userId, withdrawalId }) => {
+  return withdrawalService.getListenerWithdrawalById({ userId, withdrawalId });
+};
+
+const requestWithdrawal = async ({
+  userId,
+  amount,
+  bankName,
+  accountHolderName,
+  accountNumber,
+  accountNumberLast4,
+  ifscCode,
+  note,
+}) => {
+  return withdrawalService.createListenerWithdrawalRequest({
+    userId,
+    amount,
+    bankName,
+    accountHolderName,
+    accountNumber,
+    accountNumberLast4,
+    ifscCode,
+    note,
+  });
 };
 
 const getWalletHistory = async (userId, params) => {
@@ -290,6 +325,10 @@ module.exports = {
   getWalletSummary,
   getWalletPlans,
   getWalletHistory,
+  getWithdrawalConfig,
+  getWithdrawalHistory,
+  getWithdrawalById,
+  requestWithdrawal,
   createOrder,
   verifyPayment,
   evaluateCoupon,

@@ -1,25 +1,25 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import theme from '../constants/theme';
-import {
-  API_BASE_URL,
-  AUTH_DEBUG_ENABLED,
-} from '../constants/api';
-import { sendOtp, USER_AUTH_ENDPOINTS } from '../services/userAuthApi';
-import { normalizeIndianPhoneInput, toIndianE164 } from '../services/authPhone';
-import AppLogo from '../components/AppLogo';
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
+import { StatusBar } from "expo-status-bar";
+import { Ionicons } from "@expo/vector-icons";
+import theme from "../constants/theme";
+import { APP_FLAVOR, AUTH_DEBUG_ENABLED } from "../constants/api";
+import { getFirebaseAuthErrorMessage, getFirebaseAuthErrorCode } from "../services/firebaseAuthErrorMessage";
+import { normalizeIndianPhoneInput, toIndianE164 } from "../services/authPhone";
+import { sendFirebaseOtp } from "../services/firebasePhoneAuth";
+import AppLogo from "../components/AppLogo";
 
 const logOtpScreenDebug = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
@@ -29,10 +29,10 @@ const logOtpScreenDebug = (label, payload) => {
   console.log(`[PhoneNumberScreen] ${label}`, payload);
 };
 
-const PhoneNumberScreen = ({ navigation }) => {
-  const [phone, setPhone] = useState('');
-  const [rawPhoneInput, setRawPhoneInput] = useState('');
-  const [error, setError] = useState('');
+const PhoneNumberScreen = ({ navigation, route }) => {
+  const [phone, setPhone] = useState("");
+  const [rawPhoneInput, setRawPhoneInput] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const isValidPhone = useMemo(() => /^\d{10}$/.test(phone), [phone]);
@@ -41,96 +41,71 @@ const PhoneNumberScreen = ({ navigation }) => {
     setRawPhoneInput(text);
     setPhone(normalizeIndianPhoneInput(text));
     if (error) {
-      setError('');
+      setError("");
     }
   };
 
   const onContinue = async () => {
     const normalizedPhone = toIndianE164(phone);
-    const endpoint = USER_AUTH_ENDPOINTS.sendOtp;
-    const finalApiUrl = `${API_BASE_URL}${endpoint}`;
-
-    logOtpScreenDebug('continueButtonPressed', {
-      rawPhoneEntered: rawPhoneInput,
-      normalizedPhone,
-      isValidPhone,
-      otpSendEndpointCalled: endpoint,
-      finalApiUrl,
-    });
+    const requestedRole = String(route?.params?.role || APP_FLAVOR || "user")
+      .trim()
+      .toLowerCase();
+    const role = requestedRole === "listener" ? "listener" : "user";
 
     if (!isValidPhone) {
-      setError('Please enter a valid 10-digit phone number.');
+      setError("Please enter a valid 10-digit phone number.");
       return;
     }
-
-    if (!API_BASE_URL) {
-      const message = 'Live backend URL is missing in this APK build.';
-      logOtpScreenDebug('missingApiBaseUrl', {
-        apiBaseUrl: API_BASE_URL,
-      });
-      setError(message);
-      Alert.alert('OTP Failed', message);
-      return;
-    }
-
-    const requestPayload = {
-      phone: normalizedPhone,
-      purpose: 'LOGIN',
-    };
-
-    logOtpScreenDebug('continuePressed', {
-      rawPhoneEntered: rawPhoneInput,
-      normalizedPhone,
-      finalApiUrl,
-      requestPayload,
-      otpSendEndpointCalled: endpoint,
-    });
 
     try {
       setLoading(true);
-      setError('');
-      const otpResponse = await sendOtp(normalizedPhone);
-      logOtpScreenDebug('sendOtpSuccess', {
-        finalApiUrl,
-        requestPayload,
+      setError("");
+
+      const otpResponse = await sendFirebaseOtp(normalizedPhone);
+      logOtpScreenDebug("firebaseSendOtpSuccess", {
         normalizedPhone,
-        status: otpResponse?.status ?? null,
-        responseBody: otpResponse?.body ?? null,
+        role,
+        verificationIdReceived: Boolean(otpResponse?.verificationId),
       });
-      navigation.navigate('Otp', { phone: normalizedPhone });
+      navigation.navigate("Otp", {
+        phone: normalizedPhone,
+        role,
+        verificationId: otpResponse?.verificationId,
+        confirmation: otpResponse?.confirmation || null,
+      });
     } catch (apiError) {
-      logOtpScreenDebug('sendOtpFailure', {
-        finalApiUrl,
-        requestPayload,
+      logOtpScreenDebug("firebaseSendOtpFailure", {
         normalizedPhone,
-        status: apiError?.response?.status ?? null,
-        errorResponseData: apiError?.response?.data ?? null,
-        responseBody: apiError?.response?.data ?? null,
-        message: apiError?.message || 'Unknown error',
+        role,
+        code: getFirebaseAuthErrorCode(apiError),
+        message: apiError?.message || "Unknown error",
       });
 
-      const message =
-        apiError?.response?.data?.message ||
-        'Unable to send OTP right now. Please check backend connection.';
+      const message = getFirebaseAuthErrorMessage(apiError, { action: "send" });
       setError(message);
-      Alert.alert('OTP Failed', message);
+      Alert.alert("OTP Failed", message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <LinearGradient
-      colors={['#05020D', '#070113', '#0B031A', '#130322']}
-      locations={[0, 0.35, 0.72, 1]}
-      style={styles.container}
-    >
-      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+    <LinearGradient colors={theme.gradients.bg} style={styles.container}>
+      <StatusBar style="light" />
+      <SafeAreaView
+        style={styles.safeArea}
+        edges={["top", "left", "right", "bottom"]}
+      >
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
         >
-          <View style={styles.contentWrap}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.contentWrap}
+            onPress={Keyboard.dismiss}
+          >
             <TouchableOpacity
               style={styles.backButton}
               onPress={() => navigation.goBack()}
@@ -146,7 +121,9 @@ const PhoneNumberScreen = ({ navigation }) => {
             <AppLogo size="md" style={styles.logoCard} />
 
             <Text style={styles.heading}>Enter your phone number</Text>
-            <Text style={styles.subtitle}>We'll continue securely with your number</Text>
+            <Text style={styles.subtitle}>
+              We'll continue securely with your number
+            </Text>
 
             <View style={styles.phoneInputWrap}>
               <View style={styles.countryCodeSection}>
@@ -171,20 +148,28 @@ const PhoneNumberScreen = ({ navigation }) => {
               onPress={onContinue}
               activeOpacity={0.86}
               disabled={loading}
-              style={[styles.buttonShell, !isValidPhone && styles.buttonShellDisabled]}
+              style={[
+                styles.buttonShell,
+                !isValidPhone && styles.buttonShellDisabled,
+              ]}
             >
               <LinearGradient
-                colors={['#1A1132', '#2C1842']}
+                colors={["#1A1132", "#2C1842"]}
                 start={{ x: 0, y: 0.5 }}
                 end={{ x: 1, y: 0.5 }}
                 style={styles.buttonGradient}
               >
-              <Text style={[styles.buttonLabel, !isValidPhone && styles.buttonLabelDisabled]}>
-                  {loading ? 'Continuing...' : 'Continue'}
+                <Text
+                  style={[
+                    styles.buttonLabel,
+                    !isValidPhone && styles.buttonLabelDisabled,
+                  ]}
+                >
+                  {loading ? "Continuing..." : "Continue"}
                 </Text>
               </LinearGradient>
             </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
 
           <Text style={styles.footerText}>
             Your number is private and used only for secure sign in.
@@ -204,74 +189,75 @@ const styles = StyleSheet.create({
   },
   flex: {
     flex: 1,
-    justifyContent: 'space-between',
-    paddingHorizontal: 22,
-    paddingBottom: 18,
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingBottom: 12,
   },
   contentWrap: {
-    paddingTop: 4,
+    paddingTop: 6,
   },
   backButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    marginBottom: 20,
+    borderColor: "rgba(255,255,255,0.1)",
+    marginBottom: 14,
   },
   logoCard: {
-    alignSelf: 'flex-start',
-    marginBottom: 30,
+    alignSelf: "flex-start",
+    marginBottom: 20,
   },
   heading: {
     color: theme.colors.textPrimary,
-    fontSize: 44 / 1.6,
+    fontSize: 30,
     lineHeight: 36,
-    fontWeight: '700',
-    marginBottom: 8,
+    fontWeight: "700",
+    marginBottom: 6,
+    letterSpacing: 0.15,
   },
   subtitle: {
-    color: 'rgba(255,255,255,0.58)',
-    fontSize: 31 / 2.1,
-    marginBottom: 28,
-    fontWeight: '500',
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 13,
+    marginBottom: 22,
+    fontWeight: "500",
   },
   phoneInputWrap: {
-    height: 60,
+    height: 56,
     borderRadius: 18,
-    borderWidth: 1.2,
-    borderColor: 'rgba(255, 34, 163, 0.7)',
-    backgroundColor: 'rgba(31, 18, 46, 0.6)',
-    flexDirection: 'row',
-    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: "rgba(207, 36, 155, 0.55)",
+    backgroundColor: "rgba(24, 16, 35, 0.92)",
+    flexDirection: "row",
+    alignItems: "center",
   },
   countryCodeSection: {
-    width: 76,
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 72,
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
   },
   codeText: {
     color: theme.colors.textPrimary,
-    fontSize: 32 / 1.8,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: "700",
     letterSpacing: 0.2,
   },
   codeDivider: {
     width: 1,
     height: 36,
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: "rgba(255,255,255,0.12)",
   },
   input: {
     flex: 1,
     color: theme.colors.textPrimary,
-    fontSize: 31 / 1.9,
-    marginLeft: 14,
-    paddingRight: 16,
-    fontWeight: '500',
+    fontSize: 16,
+    marginLeft: 12,
+    paddingRight: 14,
+    fontWeight: "500",
   },
   errorText: {
     color: theme.colors.error,
@@ -280,42 +266,43 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   buttonShell: {
-    marginTop: 24,
-    borderRadius: 30,
-    borderWidth: 1.4,
-    borderColor: 'rgba(255, 34, 163, 0.95)',
-    shadowColor: '#FF2AA3',
+    marginTop: 20,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "rgba(207, 36, 155, 0.72)",
+    shadowColor: "#D10B95",
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    elevation: 7,
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    elevation: 5,
   },
   buttonShellDisabled: {
-    borderColor: 'rgba(255, 34, 163, 0.4)',
+    borderColor: "rgba(255, 34, 163, 0.4)",
     shadowOpacity: 0.1,
     elevation: 2,
   },
   buttonGradient: {
-    height: 58,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
   },
   buttonLabel: {
-    color: '#E31A97',
-    fontSize: 17,
-    fontWeight: '700',
+    color: theme.colors.neonPink,
+    fontSize: 15,
+    fontWeight: "700",
+    letterSpacing: 0.25,
   },
   buttonLabelDisabled: {
-    color: 'rgba(227, 26, 151, 0.45)',
+    color: "rgba(227, 26, 151, 0.45)",
   },
   footerText: {
-    color: 'rgba(255,255,255,0.46)',
-    fontSize: 16 / 1.25,
-    textAlign: 'center',
-    lineHeight: 20,
+    color: "rgba(255,255,255,0.46)",
+    fontSize: 12,
+    textAlign: "center",
+    lineHeight: 18,
     paddingHorizontal: 26,
-    marginBottom: 8,
+    marginBottom: 6,
   },
 });
 

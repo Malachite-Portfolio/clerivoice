@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
-  Image,
+  Modal,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -13,7 +15,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import theme from '../constants/theme';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import { useAuth } from '../context/AuthContext';
 import { getAuthEntryRouteName } from '../navigation/navigationRef';
@@ -25,6 +26,12 @@ import {
   updateMyAvailability,
 } from '../services/listenerApi';
 import {
+  getPresenceLabel,
+  isPresenceOnline,
+  normalizePresenceStatus,
+  PRESENCE_STATUS,
+} from '../services/presenceStatus';
+import {
   connectRealtimeSocket,
   getRealtimeSocket,
   subscribeRealtimeSocketState,
@@ -32,16 +39,26 @@ import {
 import { queryKeys } from '../services/queryClient';
 import { getInboxItems } from '../services/sessionApi';
 import { fetchWalletHistory } from '../services/walletApi';
+import theme from '../theme';
+import {
+  AppButton,
+  AppModalSheet,
+  DrawerItem,
+  ListCard,
+  ProfileAvatar,
+  StatusBanner,
+} from '../components/ui';
+import { DashboardLayout, ListLayout } from '../components/layouts';
 
-const TABS = ['Dashboard', 'Chats', 'Calls', 'Earnings'];
+const TAB_ITEMS = [
+  { key: 'home', label: 'Home' },
+  { key: 'favourite', label: 'Favourite users' },
+  { key: 'inbox', label: 'Inbox' },
+  { key: 'others', label: 'Others' },
+  { key: 'verified', label: 'Verified' },
+];
 
-const availabilityLabels = {
-  ONLINE: 'ONLINE',
-  OFFLINE: 'OFFLINE',
-  BUSY: 'BUSY',
-};
-
-const formatCurrency = (value) => `INR ${Number(value || 0).toFixed(0)}`;
+const formatCurrency = (value) => `₹${Number(value || 0).toFixed(0)}`;
 
 const formatShortTime = (value) => {
   if (!value) {
@@ -82,12 +99,17 @@ const logListenerDebug = (label, payload) => {
 const ListenerHomeScreen = ({ navigation }) => {
   const { session, logout } = useAuth();
   const queryClient = useQueryClient();
-  const [availability, setAvailability] = useState('OFFLINE');
+  const [availability, setAvailability] = useState(PRESENCE_STATUS.OFFLINE);
   const [updatingAvailability, setUpdatingAvailability] = useState(false);
   const [syncState, setSyncState] = useState('disconnected');
-  const [activeTab, setActiveTab] = useState('Dashboard');
+  const [activeTab, setActiveTab] = useState('home');
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [settingsExpanded, setSettingsExpanded] = useState(true);
+  const [welcomeVisible, setWelcomeVisible] = useState(false);
+  const [welcomeMessage, setWelcomeMessage] = useState('');
 
   const listenerName = session?.user?.displayName || 'Listener';
+  const availabilityStatus = normalizePresenceStatus(availability);
   const listenerAvatarSource = useMemo(
     () =>
       resolveAvatarSource({
@@ -117,7 +139,7 @@ const ListenerHomeScreen = ({ navigation }) => {
 
   const chatsQuery = useQuery({
     queryKey: queryKeys.sessions.inbox('listener'),
-    queryFn: () => getInboxItems({ currentUserId: session?.user?.id, limit: 12 }),
+    queryFn: () => getInboxItems({ currentUserId: session?.user?.id, limit: 20 }),
     enabled: Boolean(session?.accessToken),
     staleTime: 8000,
   });
@@ -149,31 +171,9 @@ const ListenerHomeScreen = ({ navigation }) => {
 
   useEffect(() => {
     if (dashboardQuery.data?.listener?.availability) {
-      setAvailability(dashboardQuery.data.listener.availability);
+      setAvailability(normalizePresenceStatus(dashboardQuery.data.listener.availability));
     }
   }, [dashboardQuery.data?.listener?.availability]);
-
-  useEffect(() => {
-    logListenerDebug('dashboardResponse', {
-      balance: dashboardQuery.data?.balance ?? null,
-      totalEarned: dashboardQuery.data?.totalEarned ?? null,
-      activeChats: dashboardQuery.data?.activeChats ?? null,
-      activeCalls: dashboardQuery.data?.activeCalls ?? null,
-    });
-  }, [
-    dashboardQuery.data?.activeCalls,
-    dashboardQuery.data?.activeChats,
-    dashboardQuery.data?.balance,
-    dashboardQuery.data?.totalEarned,
-  ]);
-
-  useEffect(() => {
-    logListenerDebug('historyFetchResponses', {
-      chatItems: chatsQuery.data?.length || 0,
-      callItems: callsQuery.data?.items?.length || 0,
-      earningItems: earningsQuery.data?.items?.length || 0,
-    });
-  }, [callsQuery.data?.items?.length, chatsQuery.data?.length, earningsQuery.data?.items?.length]);
 
   useEffect(() => {
     if (!session?.accessToken) {
@@ -189,13 +189,8 @@ const ListenerHomeScreen = ({ navigation }) => {
       setSyncState(state);
     });
 
-    const invalidateLiveData = () => {
-      refreshAll().catch(() => {});
-    };
+    const invalidateLiveData = () => refreshAll().catch(() => {});
 
-    const onCallResolved = (payload) => {
-      invalidateLiveData();
-    };
     const onListenerStatusChanged = (payload) => {
       if (String(payload?.listenerId || '') !== String(session?.user?.id || '')) {
         return;
@@ -206,21 +201,16 @@ const ListenerHomeScreen = ({ navigation }) => {
       if (!nextAvailability) {
         return;
       }
-      setAvailability(nextAvailability);
-      logListenerDebug('presenceUpdate', {
-        listenerId: payload?.listenerId || null,
-        status: nextAvailability,
-        source: 'socket_listener_status_changed',
-      });
+      setAvailability(normalizePresenceStatus(nextAvailability));
     };
 
     socket.on('chat_started', invalidateLiveData);
     socket.on('chat_message', invalidateLiveData);
     socket.on('chat_ended', invalidateLiveData);
-    socket.on('call_started', onCallResolved);
-    socket.on('call_rejected', onCallResolved);
-    socket.on('call_ended', onCallResolved);
-    socket.on('session_ended', onCallResolved);
+    socket.on('call_started', invalidateLiveData);
+    socket.on('call_rejected', invalidateLiveData);
+    socket.on('call_ended', invalidateLiveData);
+    socket.on('session_ended', invalidateLiveData);
     socket.on('wallet_updated', invalidateLiveData);
     socket.on('listener_status_changed', onListenerStatusChanged);
     socket.on('host_status_changed', onListenerStatusChanged);
@@ -229,10 +219,10 @@ const ListenerHomeScreen = ({ navigation }) => {
       socket.off('chat_started', invalidateLiveData);
       socket.off('chat_message', invalidateLiveData);
       socket.off('chat_ended', invalidateLiveData);
-      socket.off('call_started', onCallResolved);
-      socket.off('call_rejected', onCallResolved);
-      socket.off('call_ended', onCallResolved);
-      socket.off('session_ended', onCallResolved);
+      socket.off('call_started', invalidateLiveData);
+      socket.off('call_rejected', invalidateLiveData);
+      socket.off('call_ended', invalidateLiveData);
+      socket.off('session_ended', invalidateLiveData);
       socket.off('wallet_updated', invalidateLiveData);
       socket.off('listener_status_changed', onListenerStatusChanged);
       socket.off('host_status_changed', onListenerStatusChanged);
@@ -247,60 +237,64 @@ const ListenerHomeScreen = ({ navigation }) => {
 
   const callItems = useMemo(() => callsQuery.data?.items || [], [callsQuery.data?.items]);
 
-  const earningItems = useMemo(() => {
-    return (earningsQuery.data?.items || []).filter((item) => {
-      const description = String(item?.description || '').toLowerCase();
-      return item?.metadata?.source === 'SESSION_EARNING' || description.includes('session earning');
-    });
-  }, [earningsQuery.data?.items]);
+  const earningItems = useMemo(
+    () =>
+      (earningsQuery.data?.items || []).filter((item) => {
+        const description = String(item?.description || '').toLowerCase();
+        return item?.metadata?.source === 'SESSION_EARNING' || description.includes('session');
+      }),
+    [earningsQuery.data?.items],
+  );
 
   const recentSessions = useMemo(
     () => dashboardQuery.data?.recentSessions || [],
     [dashboardQuery.data?.recentSessions],
   );
 
+  const totalTalkMinutes = useMemo(() => {
+    const totalDurationSeconds = callItems.reduce(
+      (sum, item) => sum + Number(item?.totalDuration || item?.durationSeconds || 0),
+      0,
+    );
+    return Math.floor(totalDurationSeconds / 60);
+  }, [callItems]);
+
+  const verificationStatus = String(
+    dashboardQuery.data?.listener?.verificationStatus || '',
+  ).toUpperCase();
+  const showVerificationWarning = verificationStatus && verificationStatus !== 'VERIFIED';
+
   const setOnlineState = async (nextAvailability) => {
-    if (updatingAvailability || availability === nextAvailability) {
+    const normalizedNextAvailability = normalizePresenceStatus(nextAvailability);
+    if (updatingAvailability || availabilityStatus === normalizedNextAvailability) {
       return;
     }
 
     setUpdatingAvailability(true);
-    logListenerDebug('availabilityChangeStart', {
-      nextAvailability,
-    });
+    logListenerDebug('availabilityChangeStart', { nextAvailability: normalizedNextAvailability });
 
     try {
-      await updateMyAvailability(nextAvailability);
-      setAvailability(nextAvailability);
-      logListenerDebug('availabilityChangeSuccess', {
-        nextAvailability,
-      });
+      await updateMyAvailability(normalizedNextAvailability);
+      setAvailability(normalizedNextAvailability);
 
       const socket = getRealtimeSocket();
       if (socket) {
-        if (nextAvailability === 'ONLINE') {
-          socket.emit('listener_online');
-        } else if (nextAvailability === 'BUSY') {
-          socket.emit('listener_busy');
+        if (normalizedNextAvailability === PRESENCE_STATUS.ONLINE) {
+          socket.emit('listener_online', { reason: 'MANUAL_TOGGLE' });
+        } else if (normalizedNextAvailability === PRESENCE_STATUS.BUSY) {
+          socket.emit('listener_busy', { reason: 'MANUAL_TOGGLE' });
         } else {
-          socket.emit('listener_offline');
+          socket.emit('listener_offline', { reason: 'MANUAL_TOGGLE' });
         }
       }
 
       await refreshAll();
     } catch (apiError) {
-      logListenerDebug('availabilityChangeFailure', {
-        nextAvailability,
-        message: apiError?.response?.data?.message || apiError?.message || 'Unknown error',
-      });
-
-      if (isUnauthorizedApiError(apiError)) {
-        return;
+      if (!isUnauthorizedApiError(apiError)) {
+        const message =
+          apiError?.response?.data?.message || 'Unable to update listener availability.';
+        Alert.alert('Status update failed', message);
       }
-
-      const message =
-        apiError?.response?.data?.message || 'Unable to update listener availability.';
-      Alert.alert('Status update failed', message);
     } finally {
       setUpdatingAvailability(false);
     }
@@ -345,7 +339,7 @@ const ListenerHomeScreen = ({ navigation }) => {
     if (!['ACTIVE', 'RINGING'].includes(normalizedStatus)) {
       Alert.alert(
         'Call history',
-        `${item?.user?.displayName || sessionRecord?.user?.displayName || 'User'} - ${normalizedStatus || 'ENDED'}\n${totalCalls} call${totalCalls > 1 ? 's' : ''} • ${formatDuration(totalDuration)}`,
+        `${item?.user?.displayName || sessionRecord?.user?.displayName || 'User'} - ${normalizedStatus || 'ENDED'}\n${totalCalls} call${totalCalls > 1 ? 's' : ''} | ${formatDuration(totalDuration)}`,
       );
       return;
     }
@@ -371,9 +365,15 @@ const ListenerHomeScreen = ({ navigation }) => {
   };
 
   const onLogout = async () => {
+    try {
+      await updateMyAvailability(PRESENCE_STATUS.OFFLINE);
+    } catch (_error) {
+      // Best-effort offline sync before logout.
+    }
+
     const socket = getRealtimeSocket();
     if (socket) {
-      socket.emit('listener_offline');
+      socket.emit('listener_offline', { reason: 'LOGOUT' });
     }
 
     await logout();
@@ -383,244 +383,172 @@ const ListenerHomeScreen = ({ navigation }) => {
     });
   };
 
-  const renderMetricCard = (label, value, tone = 'default') => (
-    <View
-      style={[
-        styles.metricCard,
-        tone === 'accent' ? styles.metricCardAccent : null,
-        tone === 'success' ? styles.metricCardSuccess : null,
-      ]}
-    >
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={styles.metricValue}>{value}</Text>
-    </View>
-  );
+  const renderHomeTab = () => (
+    <View style={styles.homeTabWrap}>
+      <Text style={styles.centerName}>{listenerName}</Text>
+      <Text style={styles.centerMeta}>
+        Total earning :{' '}
+        <Text style={styles.centerMetaAccent}>{formatCurrency(dashboardQuery.data?.totalEarned)}</Text>
+      </Text>
 
-  const renderDashboard = () => (
-    <>
-      <View style={styles.metricsGrid}>
-        {renderMetricCard('Balance', formatCurrency(dashboardQuery.data?.balance), 'accent')}
-        {renderMetricCard('Total Earned', formatCurrency(dashboardQuery.data?.totalEarned), 'success')}
-        {renderMetricCard('Today Earned', formatCurrency(dashboardQuery.data?.todayEarned))}
-        {renderMetricCard(
-          'Active Sessions',
-          `${dashboardQuery.data?.activeChats || 0} chat • ${dashboardQuery.data?.activeCalls || 0} call`,
-        )}
-      </View>
-
-      <View style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>Availability</Text>
-        <Text style={styles.sectionSubTitle}>
-          Sync: {syncState.toUpperCase()} • Status: {availabilityLabels[availability]}
-        </Text>
-        <View style={styles.toggleRow}>
-          {['ONLINE', 'OFFLINE'].map((status) => (
-            <TouchableOpacity
-              key={status}
-              style={[
-                styles.toggleButton,
-                availability === status ? styles.toggleButtonActive : null,
-              ]}
-              onPress={() => setOnlineState(status)}
-              activeOpacity={0.85}
-              disabled={updatingAvailability}
-            >
-              <Text style={styles.toggleText}>{status === 'ONLINE' ? 'Go Online' : 'Go Offline'}</Text>
-            </TouchableOpacity>
-          ))}
+      <View style={styles.circleStatsRow}>
+        <View style={styles.metricCircle}>
+          <Text style={styles.metricCircleText}>{formatCurrency(dashboardQuery.data?.balance)}</Text>
+        </View>
+        <View style={styles.metricCircle}>
+          <Text style={styles.metricCircleText}>{totalTalkMinutes} m</Text>
         </View>
       </View>
 
-      <View style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>Recent Sessions</Text>
-        {recentSessions.length ? (
-          recentSessions.map((item) => (
-            <TouchableOpacity
-              key={`${item.type}-${item.id}`}
-              style={styles.historyRow}
-              onPress={() =>
-                item.type === 'chat'
-                  ? openChatItem({
-                      session: {
-                        id: item.id,
-                        listenerId: session?.user?.id,
-                        userId: item?.counterparty?.id || null,
-                        status: item.status,
-                        startedAt: item.timestamp,
-                      },
-                      participant: {
-                        id: item?.counterparty?.id || null,
-                        name: item?.counterparty?.displayName || 'Anonymous User',
-                        profileImageUrl: item?.counterparty?.profileImageUrl || null,
-                      },
-                    })
-                  : openCallItem({
-                      id: item.id,
-                      userId: item?.counterparty?.id || null,
-                      listenerId: session?.user?.id,
-                      user: {
-                        id: item?.counterparty?.id || null,
-                        displayName: item?.counterparty?.displayName || 'Anonymous User',
-                        profileImageUrl: item?.counterparty?.profileImageUrl || null,
-                      },
-                      status: item.status,
-                      durationSeconds: item.durationSeconds || 0,
-                      totalAmount: item.totalAmount || 0,
-                      startedAt: item.timestamp,
-                      answeredAt: item.timestamp,
-                    })
-              }
-              activeOpacity={0.85}
-            >
-              <View style={styles.historyIconWrap}>
-                <Ionicons
-                  name={item.type === 'chat' ? 'chatbubble-ellipses' : 'call'}
-                  size={18}
-                  color={theme.colors.textPrimary}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.historyName}>
-                  {item?.counterparty?.displayName || 'Anonymous User'}
-                </Text>
-                <Text style={styles.historyMeta}>
-                  {String(item.status || '').toUpperCase()} • {formatShortTime(item.timestamp)}
-                </Text>
-              </View>
-              <Text style={styles.historyValue}>{formatCurrency(item.totalAmount)}</Text>
-            </TouchableOpacity>
-          ))
-        ) : (
-          <Text style={styles.emptyText}>Recent sessions will appear here.</Text>
-        )}
-      </View>
-    </>
+      <Text style={styles.onlineDuration}>
+        {getPresenceLabel(availabilityStatus)} : {totalTalkMinutes}m
+      </Text>
+
+      <TouchableOpacity style={styles.ghostPill} activeOpacity={0.86}>
+        <Text style={styles.ghostPillText}>Penalty</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.linkBtn}
+        onPress={() => setWelcomeVisible(true)}
+        activeOpacity={0.86}
+      >
+        <Text style={styles.linkBtnText}>Change mode</Text>
+      </TouchableOpacity>
+
+      <AppButton
+        title={isPresenceOnline(availabilityStatus) ? 'Go Offline' : 'Go Online'}
+        onPress={() =>
+          setOnlineState(
+            isPresenceOnline(availabilityStatus)
+              ? PRESENCE_STATUS.OFFLINE
+              : PRESENCE_STATUS.ONLINE,
+          )
+        }
+        loading={updatingAvailability}
+        variant={isPresenceOnline(availabilityStatus) ? 'secondary' : 'primary'}
+        style={styles.modeButton}
+      />
+    </View>
   );
 
-  const renderChats = () => (
-    <View style={styles.sectionCard}>
-      <Text style={styles.sectionTitle}>Chat Inbox</Text>
+  const renderFavouriteTab = () => (
+    <ListLayout title="Favourite users">
+      {recentSessions.length ? (
+        recentSessions.map((item) => (
+          <ListCard
+            key={`${item.type}-${item.id}`}
+            avatarSource={resolveAvatarSource({
+              profileImageUrl: item?.counterparty?.profileImageUrl || null,
+              id: item?.counterparty?.id || null,
+              userId: item?.counterparty?.id || null,
+              name: item?.counterparty?.displayName || null,
+              role: 'USER',
+            })}
+            name={item?.counterparty?.displayName || 'Anonymous'}
+            meta={`${String(item?.status || '').toUpperCase()} | ${item?.type}`}
+            subtitle={`Recent interaction at ${formatShortTime(item?.timestamp)}`}
+            rightTime={formatShortTime(item?.timestamp)}
+            priceLabel={item?.totalAmount ? formatCurrency(item.totalAmount) : null}
+            showCta={false}
+            online={isPresenceOnline(item?.counterparty?.availability)}
+          />
+        ))
+      ) : (
+        <Text style={styles.emptyText}>No favourite users yet.</Text>
+      )}
+    </ListLayout>
+  );
+
+  const renderInboxTab = () => (
+    <ListLayout title="Inbox">
       {chatItems.length ? (
         chatItems.map((item) => (
-          <TouchableOpacity
+          <ListCard
             key={item.id}
-            style={styles.inboxRow}
+            avatarSource={resolveAvatarSource({
+              profileImageUrl: item?.participant?.profileImageUrl || null,
+              id: item?.participant?.id || item?.session?.userId || null,
+              userId: item?.participant?.id || item?.session?.userId || null,
+              name: item?.participant?.name || null,
+              role: 'USER',
+            })}
+            name={item?.participant?.name || 'Conversation'}
+            meta={item?.unreadCount ? `${item.unreadCount} unread` : 'No unread messages'}
+            subtitle={item?.preview || 'Open to continue chat'}
+            rightTime={formatShortTime(item?.timestamp)}
+            ctaLabel="Open"
             onPress={() => openChatItem(item)}
-            activeOpacity={0.85}
-          >
-            <Image
-              source={resolveAvatarSource({
-                profileImageUrl: item?.participant?.profileImageUrl || null,
-                id: item?.participant?.id || item?.session?.userId || null,
-                userId: item?.participant?.id || item?.session?.userId || null,
-                name: item?.participant?.name || null,
-                role: 'USER',
-              })}
-              style={styles.requestAvatar}
-            />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.requestName}>{item?.participant?.name || 'Conversation'}</Text>
-              <Text style={styles.requestMeta}>{item?.preview || 'Start conversation...'}</Text>
-            </View>
-            <View style={styles.trailingColumn}>
-              <Text style={styles.trailingTime}>{formatShortTime(item?.timestamp)}</Text>
-              {item?.unreadCount ? (
-                <View style={styles.unreadBadge}>
-                  <Text style={styles.unreadBadgeText}>
-                    {item.unreadCount > 9 ? '9+' : item.unreadCount}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-          </TouchableOpacity>
+            onCtaPress={() => openChatItem(item)}
+            showCta
+            online={isPresenceOnline(item?.participant?.availability)}
+          />
         ))
       ) : (
-        <Text style={styles.emptyText}>Your real chat sessions will appear here.</Text>
+        <Text style={styles.emptyText}>Your inbox is empty.</Text>
       )}
-    </View>
+    </ListLayout>
   );
 
-  const renderCalls = () => (
-    <View style={styles.sectionCard}>
-      <Text style={styles.sectionTitle}>Call History</Text>
-      {callItems.length ? (
-        callItems.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={styles.historyRow}
-            onPress={() => openCallItem(item)}
-            activeOpacity={0.85}
-          >
-            <View style={styles.historyIconWrap}>
-              <Ionicons name="call" size={18} color={theme.colors.textPrimary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.historyName}>{item?.user?.displayName || 'Anonymous User'}</Text>
-              <Text style={styles.historyMeta}>
-                {String(item?.status || '').toUpperCase()} •{' '}
-                {formatDuration(item?.totalDuration || item?.durationSeconds || 0)} •{' '}
-                {Number(item?.totalCalls || 1)} call{Number(item?.totalCalls || 1) > 1 ? 's' : ''}
-              </Text>
-            </View>
-            <View style={styles.trailingColumn}>
-              <Text style={styles.trailingTime}>{formatShortTime(item?.startedAt || item?.requestedAt)}</Text>
-              <Text style={styles.historyValue}>{formatCurrency(item?.totalAmount)}</Text>
-            </View>
-          </TouchableOpacity>
-        ))
-      ) : (
-        <Text style={styles.emptyText}>Your real call history will appear here.</Text>
-      )}
-    </View>
-  );
-
-  const renderEarnings = () => (
-    <View style={styles.sectionCard}>
-      <Text style={styles.sectionTitle}>Earnings History</Text>
-      <Text style={styles.sectionSubTitle}>
-        {formatCurrency(dashboardQuery.data?.totalEarned)} total • {formatCurrency(dashboardQuery.data?.todayEarned)} today
-      </Text>
+  const renderOthersTab = () => (
+    <ListLayout title="Others" subtitle="Earning and usage details">
       {earningItems.length ? (
         earningItems.map((item) => (
-          <View key={item.id} style={styles.earningRow}>
-            <View style={styles.historyIconWrap}>
-              <Ionicons name="wallet" size={18} color={theme.colors.textPrimary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.historyName}>{item?.description || 'Session earning'}</Text>
-              <Text style={styles.historyMeta}>
-                {String(item?.metadata?.sessionType || item?.sessionType || '').toUpperCase() || 'SESSION'} •{' '}
-                {formatShortTime(item?.createdAt)}
-              </Text>
-            </View>
-            <View style={styles.trailingColumn}>
-              <Text style={styles.earningAmount}>+{formatCurrency(item?.amount)}</Text>
-              <Text style={styles.trailingTime}>
-                Bal: {formatCurrency(item?.balanceAfter)}
-              </Text>
-            </View>
-          </View>
+          <ListCard
+            key={item.id}
+            avatarSource={listenerAvatarSource}
+            name={item?.description || 'Session earning'}
+            meta={String(item?.metadata?.sessionType || item?.sessionType || 'SESSION').toUpperCase()}
+            subtitle={`Balance after credit: ${formatCurrency(item?.balanceAfter)}`}
+            rightTime={formatShortTime(item?.createdAt)}
+            priceLabel={`+${formatCurrency(item?.amount)}`}
+            ctaLabel="Wallet"
+            onCtaPress={() => navigation.navigate('ListenerWallet')}
+            showCta
+          />
         ))
       ) : (
-        <Text style={styles.emptyText}>Listener earnings will appear here after paid sessions.</Text>
+        <Text style={styles.emptyText}>No earnings yet.</Text>
       )}
-    </View>
+    </ListLayout>
+  );
+
+  const renderVerifiedTab = () => (
+    <ListLayout title="Verified users">
+      {callItems.length ? (
+        callItems.map((item) => (
+          <ListCard
+            key={item.id}
+            avatarSource={resolveAvatarSource({
+              profileImageUrl: item?.user?.profileImageUrl || null,
+              id: item?.user?.id || null,
+              userId: item?.user?.id || null,
+              name: item?.user?.displayName || null,
+              role: 'USER',
+            })}
+            name={item?.user?.displayName || 'Anonymous User'}
+            meta={`${Number(item?.totalCalls || 1)} calls | ${formatDuration(item?.totalDuration || item?.durationSeconds || 0)}`}
+            subtitle={`Status: ${String(item?.status || '').toUpperCase()}`}
+            priceLabel={formatCurrency(item?.totalAmount)}
+            ctaLabel="Talk now"
+            onPress={() => openCallItem(item)}
+            onCtaPress={() => openCallItem(item)}
+            showCta
+            online
+          />
+        ))
+      ) : (
+        <Text style={styles.emptyText}>Verified list will appear here.</Text>
+      )}
+    </ListLayout>
   );
 
   const renderActiveTab = () => {
-    if (activeTab === 'Chats') {
-      return renderChats();
-    }
-
-    if (activeTab === 'Calls') {
-      return renderCalls();
-    }
-
-    if (activeTab === 'Earnings') {
-      return renderEarnings();
-    }
-
-    return renderDashboard();
+    if (activeTab === 'favourite') return renderFavouriteTab();
+    if (activeTab === 'inbox') return renderInboxTab();
+    if (activeTab === 'others') return renderOthersTab();
+    if (activeTab === 'verified') return renderVerifiedTab();
+    return renderHomeTab();
   };
 
   const isRefreshing =
@@ -630,67 +558,162 @@ const ListenerHomeScreen = ({ navigation }) => {
     earningsQuery.isRefetching;
 
   return (
-    <LinearGradient colors={['#04020C', '#0A0312', '#1B0623']} style={styles.container}>
+    <LinearGradient colors={theme.gradients.bg} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.content}
           refreshControl={
-            <RefreshControl
-              refreshing={isRefreshing}
-              onRefresh={refreshAll}
-              tintColor="#FF2AA3"
+            <RefreshControl refreshing={isRefreshing} onRefresh={refreshAll} tintColor="#FF2AA3" />
+          }
+        >
+          <DashboardLayout
+            avatarSource={listenerAvatarSource}
+            name={listenerName}
+            statusText={`Current Status  ${getPresenceLabel(availabilityStatus)}  (${syncState})`}
+            statusOnline={isPresenceOnline(availabilityStatus)}
+            walletLabel={formatCurrency(dashboardQuery.data?.balance)}
+            tabs={TAB_ITEMS}
+            activeTab={activeTab}
+            onChangeTab={setActiveTab}
+            onMenuPress={() => setDrawerOpen(true)}
+            onWalletPress={() => navigation.navigate('ListenerWallet')}
+          >
+            {showVerificationWarning ? (
+              <StatusBanner
+                variant="warning"
+                title="Profile under review"
+                message="Verification may take up to 2 business days"
+                style={styles.banner}
+              />
+            ) : (
+              <StatusBanner
+                variant="success"
+                title="Profile verified"
+                message="Your listener account is active"
+                style={styles.banner}
+              />
+            )}
+            {renderActiveTab()}
+          </DashboardLayout>
+        </ScrollView>
+
+        <Modal
+          visible={drawerOpen}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setDrawerOpen(false)}
+        >
+          <View style={styles.drawerRoot}>
+            <Pressable style={styles.drawerOverlay} onPress={() => setDrawerOpen(false)} />
+            <LinearGradient colors={theme.gradients.drawer} style={styles.drawerPanel}>
+              <View style={styles.drawerHeader}>
+                <ProfileAvatar source={listenerAvatarSource} size={58} showOnline online />
+                <Text style={styles.drawerName}>{listenerName}</Text>
+                <Text style={styles.drawerPhone}>{session?.user?.phone || '+91 0000000000'}</Text>
+              </View>
+
+              <DrawerItem
+                icon="person-circle-outline"
+                label="My Profile"
+                onPress={() => {
+                  setDrawerOpen(false);
+                  navigation.navigate('Profile');
+                }}
+                showDivider
+              />
+              <DrawerItem
+                icon="chatbox-ellipses-outline"
+                label="My chat template"
+                onPress={() => {
+                  setActiveTab('inbox');
+                  setDrawerOpen(false);
+                }}
+                showDivider
+              />
+              <DrawerItem
+                icon="business-outline"
+                label="Bank details"
+                onPress={() => {
+                  setDrawerOpen(false);
+                  navigation.navigate('ListenerWallet');
+                }}
+                showDivider
+              />
+              <DrawerItem
+                icon="settings-outline"
+                label="Settings"
+                rightElement={
+                  <Ionicons
+                    name={settingsExpanded ? 'chevron-up' : 'chevron-down'}
+                    size={16}
+                    color={theme.colors.primary}
+                  />
+                }
+                onPress={() => setSettingsExpanded((prev) => !prev)}
+                showDivider={settingsExpanded}
+              />
+
+              {settingsExpanded ? (
+                <View>
+                  <DrawerItem
+                    icon="trash-outline"
+                    label="Delete Account"
+                    onPress={() => {
+                      setDrawerOpen(false);
+                      Alert.alert('Delete Account', 'This feature will be available soon.');
+                    }}
+                    destructive
+                    showDivider
+                  />
+                  <DrawerItem
+                    icon="stats-chart-outline"
+                    label="Usage"
+                    onPress={() => {
+                      setActiveTab('others');
+                      setDrawerOpen(false);
+                    }}
+                    destructive
+                    showDivider
+                  />
+                  <DrawerItem
+                    icon="log-out-outline"
+                    label="Log out"
+                    onPress={() => {
+                      setDrawerOpen(false);
+                      onLogout();
+                    }}
+                    destructive
+                  />
+                </View>
+              ) : null}
+
+              <Text style={styles.drawerFooter}>App v2.0</Text>
+            </LinearGradient>
+          </View>
+        </Modal>
+
+        <AppModalSheet
+          visible={welcomeVisible}
+          onClose={() => setWelcomeVisible(false)}
+          title="Welcome message"
+          footer={
+            <AppButton
+              title="Update"
+              onPress={() => setWelcomeVisible(false)}
+              style={styles.welcomeButton}
             />
           }
         >
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>Listener Dashboard</Text>
-            <View style={styles.headerActions}>
-              <TouchableOpacity
-                style={styles.profileAvatarBtn}
-                onPress={() => {
-                  logListenerDebug('profileOpen', {
-                    source: 'listener_header',
-                  });
-                  navigation.navigate('Profile');
-                }}
-                activeOpacity={0.85}
-              >
-                <Image source={listenerAvatarSource} style={styles.profileAvatarImg} />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.85}>
-                <Ionicons name="log-out-outline" size={18} color={theme.colors.textPrimary} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.welcomeCard}>
-            <Text style={styles.welcomeTitle}>Welcome, {listenerName}</Text>
-            <Text style={styles.welcomeSubTitle}>
-              {formatCurrency(dashboardQuery.data?.balance)} available • {availabilityLabels[availability]}
-            </Text>
-          </View>
-
-          <View style={styles.tabRow}>
-            {TABS.map((tab) => {
-              const isActive = tab === activeTab;
-              return (
-                <TouchableOpacity
-                  key={tab}
-                  style={[styles.tabButton, isActive ? styles.tabButtonActive : null]}
-                  onPress={() => setActiveTab(tab)}
-                  activeOpacity={0.85}
-                >
-                  <Text style={[styles.tabButtonText, isActive ? styles.tabButtonTextActive : null]}>
-                    {tab}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {renderActiveTab()}
-        </ScrollView>
+          <TextInput
+            value={welcomeMessage}
+            onChangeText={setWelcomeMessage}
+            placeholder="Click to edit"
+            placeholderTextColor={theme.colors.textMuted}
+            style={styles.welcomeInput}
+            multiline
+          />
+        </AppModalSheet>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -699,309 +722,143 @@ const ListenerHomeScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1 },
-  content: { paddingHorizontal: 16, paddingBottom: 24 },
-  header: {
-    marginTop: 6,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  content: {
+    paddingHorizontal: theme.spacing.screen,
+    paddingBottom: theme.spacing.xl,
+  },
+  banner: {
+    marginTop: theme.spacing.sm,
+  },
+  homeTabWrap: {
+    marginTop: theme.spacing.xl,
     alignItems: 'center',
   },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  profileAvatarBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1,
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
-  },
-  profileAvatarImg: {
-    width: '100%',
-    height: '100%',
-  },
-  headerTitle: {
+  centerName: {
     color: theme.colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 32,
+    fontWeight: theme.typography.weights.bold,
   },
-  logoutButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.07)',
-  },
-  welcomeCard: {
-    marginTop: 14,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255, 42, 163, 0.08)',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  welcomeTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  welcomeSubTitle: {
+  centerMeta: {
     marginTop: 4,
     color: theme.colors.textSecondary,
-    fontSize: 12,
+    fontSize: theme.typography.h3,
+    fontWeight: theme.typography.weights.medium,
   },
-  tabRow: {
-    marginTop: 14,
+  centerMetaAccent: {
+    color: theme.colors.primary,
+    fontWeight: theme.typography.weights.bold,
+  },
+  circleStatsRow: {
+    marginTop: theme.spacing.xl,
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    gap: theme.spacing.lg,
   },
-  tabButton: {
-    borderRadius: 14,
+  metricCircle: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
     borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  tabButtonActive: {
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255,42,163,0.22)',
-  },
-  tabButtonText: {
-    color: theme.colors.textSecondary,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  tabButtonTextActive: {
-    color: theme.colors.textPrimary,
-  },
-  metricsGrid: {
-    marginTop: 16,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  metricCard: {
-    width: '48%',
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  metricCardAccent: {
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255,42,163,0.14)',
-  },
-  metricCardSuccess: {
-    borderColor: 'rgba(15,214,122,0.35)',
-    backgroundColor: 'rgba(15,214,122,0.10)',
-  },
-  metricLabel: {
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  metricValue: {
-    marginTop: 8,
-    color: theme.colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  sectionCard: {
-    marginTop: 16,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  sectionTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  sectionSubTitle: {
-    marginTop: 4,
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-  },
-  toggleRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    gap: 10,
-  },
-  toggleButton: {
-    flex: 1,
-    height: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderColor: theme.colors.borderStrong,
+    backgroundColor: theme.colors.secondary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  toggleButtonActive: {
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255,42,163,0.24)',
-  },
-  toggleText: {
+  metricCircleText: {
     color: theme.colors.textPrimary,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: theme.typography.h2,
+    fontWeight: theme.typography.weights.semibold,
   },
-  requestCard: {
-    marginTop: 12,
-    borderRadius: 16,
+  onlineDuration: {
+    marginTop: theme.spacing.xl,
+    color: theme.colors.primary,
+    fontSize: theme.typography.h2,
+    fontWeight: theme.typography.weights.medium,
+  },
+  ghostPill: {
+    marginTop: theme.spacing.lg,
+    borderRadius: theme.radius.round,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    padding: 12,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  requestAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,42,163,0.5)',
-    marginRight: 12,
-  },
-  requestName: {
-    color: theme.colors.textPrimary,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  requestMeta: {
-    marginTop: 4,
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-  },
-  livePill: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(255,42,163,0.35)',
-    backgroundColor: 'rgba(255,42,163,0.16)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  livePillText: {
-    color: theme.colors.textPrimary,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  requestActions: {
-    marginTop: 12,
-    flexDirection: 'row',
-    gap: 10,
-  },
-  actionButton: {
-    flex: 1,
-    height: 40,
-    borderRadius: 12,
-    borderWidth: 1,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    minWidth: 120,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 12,
   },
-  acceptButton: {
-    borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255,42,163,0.24)',
-  },
-  rejectButton: {
-    borderColor: 'rgba(255,255,255,0.2)',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  actionButtonText: {
+  ghostPillText: {
     color: theme.colors.textPrimary,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: theme.typography.title,
+    fontWeight: theme.typography.weights.semibold,
   },
-  historyRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
+  linkBtn: {
+    marginTop: 80,
+    paddingVertical: theme.spacing.sm,
   },
-  historyIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    marginRight: 12,
+  linkBtnText: {
+    color: theme.colors.primary,
+    fontSize: theme.typography.h2,
+    textDecorationLine: 'underline',
+    fontWeight: theme.typography.weights.medium,
   },
-  historyName: {
-    color: theme.colors.textPrimary,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  historyMeta: {
-    marginTop: 3,
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-  },
-  historyValue: {
-    color: theme.colors.textPrimary,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  trailingColumn: {
-    alignItems: 'flex-end',
-  },
-  trailingTime: {
-    color: theme.colors.textMuted,
-    fontSize: 11,
-  },
-  inboxRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  unreadBadge: {
-    marginTop: 6,
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: theme.colors.magenta,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
-  },
-  unreadBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  earningRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  earningAmount: {
-    color: theme.colors.success,
-    fontSize: 13,
-    fontWeight: '700',
+  modeButton: {
+    marginTop: theme.spacing.lg,
+    minWidth: 200,
   },
   emptyText: {
-    marginTop: 12,
     color: theme.colors.textSecondary,
-    fontSize: 13,
+    fontSize: theme.typography.body,
+    marginTop: theme.spacing.md,
+  },
+  drawerRoot: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  drawerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  drawerPanel: {
+    width: '78%',
+    borderLeftWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    paddingTop: theme.spacing.xl,
+  },
+  drawerHeader: {
+    paddingHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+  },
+  drawerName: {
+    marginTop: 8,
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.h3,
+    fontWeight: theme.typography.weights.bold,
+  },
+  drawerPhone: {
+    marginTop: 2,
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.caption,
+  },
+  drawerFooter: {
+    marginTop: 'auto',
+    marginBottom: theme.spacing.lg,
+    marginLeft: theme.spacing.md,
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.body,
+  },
+  welcomeInput: {
+    minHeight: 90,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSoft,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    color: theme.colors.textPrimary,
+    fontSize: theme.typography.body,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+    textAlignVertical: 'top',
+  },
+  welcomeButton: {
+    marginTop: theme.spacing.lg,
   },
 });
 

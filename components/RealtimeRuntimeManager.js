@@ -754,19 +754,10 @@ const RealtimeRuntimeManager = () => {
         appState,
       });
 
-      if (
-        isListenerApp &&
-        !session?.isDemoUser &&
-        String(session?.user?.role || '').trim().toUpperCase() === 'LISTENER'
-      ) {
-        const socket = getRealtimeSocket();
-        if (socket && appState !== 'active' && !activeCall?.sessionId) {
-          socket.emit('listener_offline');
-          logRealtimeRuntime('listenerPresenceEmit', {
-            status: 'OFFLINE',
-            reason: 'app_background_no_active_call',
-          });
-        }
+      if (appState !== 'active') {
+        logRealtimeRuntime('listenerPresenceRetained', {
+          reason: 'app_background_keep_manual_status',
+        });
       }
 
       if (appState === 'active' && previousState !== 'active') {
@@ -785,10 +776,7 @@ const RealtimeRuntimeManager = () => {
   }, [
     activeCall?.callType,
     activeCall?.sessionId,
-    isListenerApp,
     restoreActiveCallSession,
-    session?.isDemoUser,
-    session?.user?.role,
   ]);
 
   useEffect(() => {
@@ -1150,10 +1138,10 @@ const styles = StyleSheet.create({
     elevation: 12,
   },
   bannerCard: {
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(255, 42, 163, 0.38)',
-    backgroundColor: 'rgba(9, 10, 20, 0.96)',
+    backgroundColor: 'rgba(14, 10, 22, 0.98)',
     paddingHorizontal: 14,
     paddingVertical: 12,
     shadowColor: '#000000',
@@ -1181,10 +1169,10 @@ const styles = StyleSheet.create({
     elevation: 11,
   },
   returnToCallCard: {
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(255, 42, 163, 0.46)',
-    backgroundColor: 'rgba(10, 9, 18, 0.98)',
+    backgroundColor: 'rgba(14, 10, 22, 0.98)',
     minHeight: 54,
     paddingHorizontal: 14,
     paddingVertical: 11,

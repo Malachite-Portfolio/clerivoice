@@ -52,6 +52,9 @@ enum WalletTransactionType {
   ADMIN_CREDIT
   ADMIN_DEBIT
   PROMO_CREDIT
+  WITHDRAWAL_LOCK
+  WITHDRAWAL_REFUND
+  WITHDRAWAL_PAYOUT
 }
 
 enum WalletTransactionStatus {
@@ -137,6 +140,14 @@ enum SupportPriority {
   HIGH
 }
 
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  IN_PROGRESS
+  PAYMENT_DONE
+}
+
 enum SessionEndReason {
   USER_ENDED
   LISTENER_ENDED
@@ -172,6 +183,8 @@ model User {
 
   listenerProfile ListenerProfile?
   wallet          Wallet?
+  listenerWithdrawals WithdrawalRequest[] @relation("ListenerWithdrawals")
+  approvedWithdrawals WithdrawalRequest[] @relation("AdminApprovedWithdrawals")
   otpCodes        OtpCode[]
   authSessions    AuthSession[]
   settings        UserSetting?
@@ -243,6 +256,7 @@ model Wallet {
   id        String   @id @default(cuid())
   userId    String   @unique
   balance   Decimal  @default(0) @db.Decimal(14, 2)
+  lockedWithdrawalBalance Decimal @default(0) @db.Decimal(14, 2)
   currency  String   @default("INR")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -251,6 +265,34 @@ model Wallet {
   transactions WalletTransaction[]
 
   @@index([updatedAt])
+}
+
+model WithdrawalRequest {
+  id                 String           @id @default(cuid())
+  listenerId         String
+  amount             Decimal          @db.Decimal(14, 2)
+  status             WithdrawalStatus @default(PENDING)
+  bankName           String
+  accountHolderName  String
+  accountNumberLast4 String
+  ifscCode           String
+  requestedAt        DateTime         @default(now())
+  approvedAt         DateTime?
+  processingAt       DateTime?
+  paidAt             DateTime?
+  rejectedAt         DateTime?
+  adminNote          String?
+  transactionReference String?
+  approvedByAdminId  String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  listener User @relation("ListenerWithdrawals", fields: [listenerId], references: [id], onDelete: Restrict)
+  approvedByAdmin User? @relation("AdminApprovedWithdrawals", fields: [approvedByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([listenerId, requestedAt])
+  @@index([status, requestedAt])
+  @@index([approvedByAdminId, status])
 }
 
 model WalletTransaction {

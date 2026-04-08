@@ -224,7 +224,7 @@ const styles = StyleSheet.create({
     paddingBottom: 28,
   },
   heroCard: {
-    borderRadius: 30,
+    borderRadius: 32,
     padding: 22,
     ...theme.shadow.card,
   },
@@ -271,10 +271,10 @@ const styles = StyleSheet.create({
   },
   rewardCard: {
     marginTop: 18,
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(24,13,34,0.96)',
+    backgroundColor: 'rgba(19,13,28,0.96)',
     padding: 16,
     flexDirection: 'row',
     alignItems: 'stretch',
@@ -302,7 +302,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     marginTop: 18,
-    borderRadius: 22,
+    borderRadius: 24,
     minHeight: 56,
     backgroundColor: theme.colors.magenta,
     flexDirection: 'row',
@@ -318,10 +318,10 @@ const styles = StyleSheet.create({
   },
   codeCard: {
     marginTop: 18,
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(23,13,34,0.96)',
+    backgroundColor: 'rgba(19,13,28,0.96)',
     padding: 18,
   },
   sectionTitle: {

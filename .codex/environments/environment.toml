@@ -18,7 +18,7 @@ git push
 name = "Test"
 icon = "tool"
 command = '''
-curl -X POST https://clerivoice-production.up.railway.app/api/v1/admin/auth/login \
+curl -X POST https://clarivoice-api-1032786255556.asia-south1.run.app/api/v1/admin/auth/login \
 -H "Content-Type: application/json" \
 -d "{\"phoneOrEmail\":\"admin25\",\"password\":\"Admin@123\"}"
 '''

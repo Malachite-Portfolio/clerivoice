@@ -165,7 +165,7 @@ const styles = StyleSheet.create({
   drawerContainer: {
     flex: 1,
     borderRightWidth: 1,
-    borderColor: theme.colors.borderPink,
+    borderColor: 'rgba(207, 36, 155, 0.3)',
   },
   drawerSafeArea: {
     flex: 1,
@@ -183,9 +183,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   userAvatar: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     borderWidth: 1.5,
     borderColor: theme.colors.magenta,
     marginBottom: 9,
@@ -212,7 +212,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingVertical: 13,
   },
   menuIcon: {
     marginRight: 12,

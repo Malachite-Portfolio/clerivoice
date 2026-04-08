@@ -30,6 +30,7 @@ module.exports = {
         backgroundColor: '#05020D',
         foregroundImage: './assets/logo/app-icon.png',
       },
+      allowBackup: false,
       package: isListener ? 'com.clarivoice.listener' : 'com.clarivoice.user',
     },
     web: {

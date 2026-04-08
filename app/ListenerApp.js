@@ -5,7 +5,7 @@ import { validateStoredSession } from '../services/listenerSessionValidationApi'
 
 const listenerVariantConfig = {
   appDisplayName: 'Clarivoice Listener',
-  authEntryRouteName: 'ListenerLogin',
+  authEntryRouteName: 'ListenerIntroCarousel',
   homeRouteName: 'ListenerHome',
   sessionRoleName: 'LISTENER',
   authStorageKey: 'clarivoice_listener_session',

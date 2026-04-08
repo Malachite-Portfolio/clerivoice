@@ -1,0 +1,43 @@
+const colors = {
+  background: '#0B0B12',
+  backgroundElevated: '#11121C',
+  backgroundPanel: '#171026',
+  backgroundCard: '#1A1329',
+  primary: '#E616A8',
+  primaryDark: '#B30F84',
+  primarySoft: 'rgba(230, 22, 168, 0.2)',
+  secondary: '#2A1438',
+  secondarySoft: '#3A1A4C',
+  textPrimary: '#F6F4FF',
+  textSecondary: '#B6AFC8',
+  textMuted: '#807897',
+  success: '#1EDC73',
+  error: '#FF5C7A',
+  warning: '#F4C84F',
+  borderSoft: 'rgba(255,255,255,0.1)',
+  borderStrong: 'rgba(230,22,168,0.42)',
+  overlay: 'rgba(0,0,0,0.66)',
+  onlineDot: '#25D96A',
+  offlineDot: '#5D556E',
+  white: '#FFFFFF',
+  black: '#000000',
+  bgPrimary: '#0B0B12',
+  bgSecondary: '#11121C',
+  bgTertiary: '#171026',
+  magenta: '#E616A8',
+  neonPink: '#FF38BC',
+  pinkSoft: '#CF249B',
+  purpleGlow: '#7E2B8D',
+  glass: 'rgba(24,17,35,0.84)',
+  glassStrong: 'rgba(18,13,28,0.96)',
+  borderPink: 'rgba(230,22,168,0.42)',
+};
+
+export const gradients = {
+  appBackground: ['#05050B', '#090914', '#0E0A1B'],
+  primaryButton: ['#B30F84', '#E616A8', '#FF38BC'],
+  card: ['rgba(33, 25, 48, 0.96)', 'rgba(21, 15, 33, 0.96)'],
+  drawer: ['#24112F', '#170D22', '#130B1D'],
+};
+
+export default colors;

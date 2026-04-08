@@ -94,10 +94,15 @@ const AppLogo = ({ size = 'sm', withCard = true, style, imageStyle }) => {
 const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
-    backgroundColor: 'rgba(20, 15, 36, 0.82)',
+    borderColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: 'rgba(20, 14, 31, 0.92)',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.24,
+    shadowRadius: 18,
+    elevation: 6,
   },
   logoImage: {
     maxWidth: '100%',

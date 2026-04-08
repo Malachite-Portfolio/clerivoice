@@ -17,8 +17,9 @@ apiClient.interceptors.request.use((config) => {
   }
 
   config.headers = config.headers || {};
+  const skipAuth = config?.skipAuth === true;
 
-  if (accessToken) {
+  if (!skipAuth && accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }
   return config;
@@ -48,8 +49,10 @@ apiClient.interceptors.response.use(
   async (error) => {
     const unauthorized = isUnauthorizedApiError(error);
     const requestConfig = error?.config || {};
+    const skipAuth = requestConfig?.skipAuth === true;
     const canRetryWithRefresh =
       unauthorized &&
+      !skipAuth &&
       !requestConfig?.__clarivoiceRetry &&
       !isRefreshRequest(requestConfig) &&
       typeof tokenRefreshHandler === 'function';
@@ -96,7 +99,7 @@ apiClient.interceptors.response.use(
       }
     }
 
-    if (unauthorized && typeof unauthorizedHandler === 'function') {
+    if (!skipAuth && unauthorized && typeof unauthorizedHandler === 'function') {
       if (AUTH_DEBUG_ENABLED) {
         console.warn('[ExpoAuth] unauthorized API response detected', {
           url: requestConfig?.url || null,

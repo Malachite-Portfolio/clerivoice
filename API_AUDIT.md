@@ -123,13 +123,13 @@ These are not auth/base-URL problems anymore, but they are still API-contract mi
 
 - `admin-panel/.env.local`
   - was: `http://localhost:8080/api/v1`
-  - now: `https://your-backend.up.railway.app/api/v1`
+  - now: `https://clarivoice-api-1032786255556.asia-south1.run.app/api/v1`
 - `admin-panel/.env.local`
   - was: `http://localhost:8080`
-  - now: `https://your-backend.up.railway.app`
+  - now: `https://clarivoice-api-1032786255556.asia-south1.run.app`
 - `.env.example`
   - was: `https://your-live-backend.example.com/*`
-  - now aligned to `https://your-backend.up.railway.app/*`
+  - now aligned to `https://clarivoice-api-1032786255556.asia-south1.run.app/*`
 
 ### Remaining non-frontend references
 

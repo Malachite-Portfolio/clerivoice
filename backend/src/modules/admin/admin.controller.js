@@ -54,6 +54,45 @@ const listWalletLedger = asyncHandler(async (req, res) => {
   return successResponse(res, data);
 });
 
+const listWithdrawals = asyncHandler(async (req, res) => {
+  const data = await adminService.listWithdrawals(req.query);
+  return successResponse(res, data);
+});
+
+const getWithdrawalById = asyncHandler(async (req, res) => {
+  const data = await adminService.getWithdrawalById({
+    withdrawalId: req.params.id,
+  });
+  return successResponse(res, data);
+});
+
+const updateWithdrawalStatus = asyncHandler(async (req, res) => {
+  const data = await adminService.updateWithdrawalStatus({
+    withdrawalId: req.params.id,
+    adminId: req.user.id,
+    ...req.body,
+  });
+  return successResponse(res, data, 'Withdrawal status updated');
+});
+
+const updateWithdrawalAdminNote = asyncHandler(async (req, res) => {
+  const data = await adminService.updateWithdrawalAdminNote({
+    withdrawalId: req.params.id,
+    adminId: req.user.id,
+    adminNote: req.body.adminNote,
+  });
+  return successResponse(res, data, 'Withdrawal admin note updated');
+});
+
+const updateWithdrawalTransactionReference = asyncHandler(async (req, res) => {
+  const data = await adminService.updateWithdrawalTransactionReference({
+    withdrawalId: req.params.id,
+    adminId: req.user.id,
+    transactionReference: req.body.transactionReference,
+  });
+  return successResponse(res, data, 'Withdrawal transaction reference updated');
+});
+
 const listChatSessions = asyncHandler(async (req, res) => {
   const data = await adminService.listChatSessions({
     page: Number(req.query.page || 1),
@@ -114,6 +153,11 @@ module.exports = {
   updateListenerVisibility,
   removeListenerSoft,
   listWalletLedger,
+  listWithdrawals,
+  getWithdrawalById,
+  updateWithdrawalStatus,
+  updateWithdrawalAdminNote,
+  updateWithdrawalTransactionReference,
   listChatSessions,
   listCallSessions,
   manualWalletAdjustment,

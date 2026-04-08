@@ -1,14 +1,25 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
+apply plugin: "com.google.gms.google-services"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 def requestedTaskNames = gradle.startParameter.taskNames.collect { it.toLowerCase() }
-def requestedBuildFlavor = requestedTaskNames.any { it.contains("listener") }
+def flavorFromTask = requestedTaskNames.any { it.contains("listener") }
     ? "listener"
     : requestedTaskNames.any { it.contains("user") }
         ? "user"
-        : (System.getenv("CLARIVOICE_BUILD_FLAVOR") ?: "user")
+        : null
+def flavorFromEnv = (System.getenv("CLARIVOICE_BUILD_FLAVOR") ?: "").toString().trim().toLowerCase()
+
+if (!flavorFromTask && requestedTaskNames.any { it.contains("release") } && !["user", "listener"].contains(flavorFromEnv)) {
+    throw new GradleException(
+        "Could not resolve Clarivoice flavor for a release build. " +
+        "Use assembleUserRelease / assembleListenerRelease (or set CLARIVOICE_BUILD_FLAVOR=user|listener)."
+    )
+}
+
+def requestedBuildFlavor = flavorFromTask ?: (["user", "listener"].contains(flavorFromEnv) ? flavorFromEnv : "user")
 def resolvedEntryFile = requestedBuildFlavor == "listener" ? "index.listener.js" : "index.user.js"
 
 /**
@@ -227,6 +238,8 @@ tasks.configureEach { task ->
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    implementation platform('com.google.firebase:firebase-bom:34.11.0')
+    implementation 'com.google.firebase:firebase-auth'
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

@@ -30,7 +30,7 @@ const GradientButton = ({
       style={[styles.touchable, style]}
     >
       <LinearGradient
-        colors={isDisabled ? ['#473347', '#473347'] : gradientColors}
+        colors={isDisabled ? ['#3D3143', '#3D3143'] : gradientColors}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 0 }}
         style={styles.gradient}
@@ -60,9 +60,11 @@ const styles = StyleSheet.create({
   touchable: {
     width: '100%',
     borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
   },
   gradient: {
-    minHeight: 58,
+    minHeight: 54,
     borderRadius: theme.radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
@@ -76,20 +78,20 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   iconBox: {
-    width: 28,
-    height: 28,
-    borderRadius: 10,
-    backgroundColor: 'rgba(8, 5, 15, 0.95)',
+    width: 26,
+    height: 26,
+    borderRadius: 9,
+    backgroundColor: 'rgba(10, 8, 16, 0.95)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 42, 163, 0.35)',
+    borderColor: 'rgba(207, 36, 155, 0.4)',
   },
   title: {
     color: theme.colors.textPrimary,
-    fontSize: theme.typography.title,
+    fontSize: 15,
     fontWeight: '700',
-    letterSpacing: 0.15,
+    letterSpacing: 0.2,
   },
 });
 

@@ -1,23 +1,27 @@
 const { config } = require('dotenv');
 const { z } = require('zod');
 
-config();
+if (!process.env.K_SERVICE) {
+  // Load local .env only outside Cloud Run.
+  config();
+}
 
 const tokenExpireSecondsFromEnv =
   process.env.AGORA_TOKEN_EXPIRE_SECONDS ||
   process.env.AGORA_TOKEN_EXPIRY_SECONDS ||
   '3600';
 const jwtSecretFromEnv = process.env.JWT_SECRET || '';
+const nodeEnvFromProcess = process.env.NODE_ENV || (process.env.K_SERVICE ? 'production' : 'development');
+const defaultClientOrigin =
+  nodeEnvFromProcess === 'production'
+    ? ''
+    : 'http://localhost:3000,http://localhost:5173';
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().optional(),
+  NODE_ENV: z.enum(['development', 'test', 'production']).default(nodeEnvFromProcess),
+  PORT: z.coerce.number().default(8080),
   API_PREFIX: z.string().default('/api/v1'),
-  CLIENT_ORIGIN: z
-    .string()
-    .default(
-      'https://admin-panel-4bh7uld06-malachite-portfolios-projects.vercel.app,http://localhost:3000,http://localhost:5173'
-    ),
+  CLIENT_ORIGIN: z.string().default(defaultClientOrigin),
 
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -33,12 +37,12 @@ const envSchema = z.object({
     .string()
     .default('false')
     .transform((value) => value.toLowerCase() === 'true'),
-  TEST_AUTH_FIXED_OTP: z.string().default('123456'),
-  TEST_USER_PHONE: z.string().default('+910000000201'),
+  TEST_AUTH_FIXED_OTP: z.string().default(''),
+  TEST_USER_PHONE: z.string().default(''),
   TEST_USER_PHONES: z.string().default(''),
   TEST_USER_NUMBERS: z.string().default(''),
   TEST_USER_DISPLAY_NAME: z.string().default('Test User'),
-  TEST_LISTENER_PHONE: z.string().default('+910000000101'),
+  TEST_LISTENER_PHONE: z.string().default(''),
   TEST_LISTENER_PHONES: z.string().default(''),
   TEST_LISTENER_NUMBERS: z.string().default(''),
   TEST_LISTENER_DISPLAY_NAME: z.string().default('Test Listener'),
@@ -46,9 +50,9 @@ const envSchema = z.object({
     .string()
     .default('false')
     .transform((value) => value.toLowerCase() === 'true'),
-  DEMO_OTP_CODE: z.string().default('123456'),
-  DEMO_LOGIN_PHONE: z.string().default('+916386361769'),
-  DEMO_LOGIN_OTP: z.string().default('123456'),
+  DEMO_OTP_CODE: z.string().default(''),
+  DEMO_LOGIN_PHONE: z.string().default(''),
+  DEMO_LOGIN_OTP: z.string().default(''),
   DEMO_USER_OTP_BYPASS: z
     .string()
     .default('false')
@@ -99,6 +103,56 @@ if (!parsed.success) {
 }
 
 const env = parsed.data;
+
+if (env.NODE_ENV === 'production') {
+  const allowedOrigins = String(env.CLIENT_ORIGIN || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (!allowedOrigins.length) {
+    throw new Error(
+      'Missing CLIENT_ORIGIN for production. Set comma-separated trusted origins.'
+    );
+  }
+
+  const hasLocalOrigin = allowedOrigins.some(
+    (origin) => origin.includes('localhost') || origin.includes('127.0.0.1')
+  );
+
+  if (hasLocalOrigin) {
+    throw new Error('CLIENT_ORIGIN must not include localhost or 127.0.0.1 in production.');
+  }
+
+  if (
+    env.ENABLE_TEST_AUTH ||
+    env.DEMO_OTP_MODE ||
+    env.DEMO_USER_OTP_BYPASS ||
+    env.DEMO_LISTENER_LOGIN_BYPASS
+  ) {
+    throw new Error('Test/demo auth shortcuts must be disabled in production.');
+  }
+
+  if (env.PAYMENT_PROVIDER === 'mock') {
+    throw new Error('PAYMENT_PROVIDER=mock is not allowed in production.');
+  }
+
+  if (
+    env.PAYMENT_PROVIDER === 'razorpay' &&
+    (!String(env.RAZORPAY_KEY_ID || '').trim() || !String(env.RAZORPAY_KEY_SECRET || '').trim())
+  ) {
+    throw new Error(
+      'Missing Razorpay configuration in production. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.'
+    );
+  }
+
+  if (
+    env.PAYMENT_PROVIDER === 'stripe' &&
+    !String(env.STRIPE_SECRET_KEY || '').trim()
+  ) {
+    throw new Error('Missing Stripe configuration in production. Set STRIPE_SECRET_KEY.');
+  }
+}
 
 if (!env.AGORA_APP_ID || !env.AGORA_APP_CERTIFICATE) {
   throw new Error(

@@ -17,6 +17,40 @@ const getPlans = asyncHandler(async (_req, res) => {
   return successResponse(res, { plans: data });
 });
 
+const getWithdrawalConfig = asyncHandler(async (req, res) => {
+  const data = await walletService.getWithdrawalConfig(req.user.id);
+  return successResponse(res, data);
+});
+
+const getWithdrawalHistory = asyncHandler(async (req, res) => {
+  const data = await walletService.getWithdrawalHistory(req.user.id, req.query);
+  return successResponse(res, data);
+});
+
+const getWithdrawalById = asyncHandler(async (req, res) => {
+  const data = await walletService.getWithdrawalById({
+    userId: req.user.id,
+    withdrawalId: req.params.id,
+  });
+
+  return successResponse(res, data);
+});
+
+const requestWithdrawal = asyncHandler(async (req, res) => {
+  const data = await walletService.requestWithdrawal({
+    userId: req.user.id,
+    amount: req.body.amount,
+    bankName: req.body.bankName,
+    accountHolderName: req.body.accountHolderName,
+    accountNumber: req.body.accountNumber,
+    accountNumberLast4: req.body.accountNumberLast4,
+    ifscCode: req.body.ifscCode,
+    note: req.body.note,
+  });
+
+  return successResponse(res, data, 'Withdrawal request submitted');
+});
+
 const createOrder = asyncHandler(async (req, res) => {
   const data = await walletService.createOrder({
     userId: req.user.id,
@@ -56,6 +90,10 @@ module.exports = {
   getSummary,
   getHistory,
   getPlans,
+  getWithdrawalConfig,
+  getWithdrawalHistory,
+  getWithdrawalById,
+  requestWithdrawal,
   createOrder,
   verifyPayment,
   applyCoupon,

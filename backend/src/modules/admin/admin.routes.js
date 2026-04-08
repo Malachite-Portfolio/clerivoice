@@ -13,6 +13,11 @@ const {
   createRechargePlanSchema,
   updateRechargePlanSchema,
   updateReferralRuleSchema,
+  withdrawalIdParamsSchema,
+  withdrawalListQuerySchema,
+  updateWithdrawalStatusSchema,
+  updateWithdrawalAdminNoteSchema,
+  updateWithdrawalTransactionReferenceSchema,
 } = require('./admin.validator');
 
 const router = express.Router();
@@ -28,6 +33,14 @@ router.post('/listeners/:id/remove', validate(removeListenerSchema), controller.
 
 router.get('/wallet/ledger', controller.listWalletLedger);
 router.post('/wallet/adjust', validate(manualWalletAdjustmentSchema), controller.manualWalletAdjustment);
+router.get('/withdrawals', validate(withdrawalListQuerySchema, 'query'), controller.listWithdrawals);
+router.get('/withdrawals/:id', validate(withdrawalIdParamsSchema, 'params'), controller.getWithdrawalById);
+router.patch('/withdrawal/:id/status', validate(withdrawalIdParamsSchema, 'params'), validate(updateWithdrawalStatusSchema), controller.updateWithdrawalStatus);
+router.patch('/withdrawal/:id/note', validate(withdrawalIdParamsSchema, 'params'), validate(updateWithdrawalAdminNoteSchema), controller.updateWithdrawalAdminNote);
+router.patch('/withdrawal/:id/reference', validate(withdrawalIdParamsSchema, 'params'), validate(updateWithdrawalTransactionReferenceSchema), controller.updateWithdrawalTransactionReference);
+router.patch('/withdrawals/:id/status', validate(withdrawalIdParamsSchema, 'params'), validate(updateWithdrawalStatusSchema), controller.updateWithdrawalStatus);
+router.patch('/withdrawals/:id/admin-note', validate(withdrawalIdParamsSchema, 'params'), validate(updateWithdrawalAdminNoteSchema), controller.updateWithdrawalAdminNote);
+router.patch('/withdrawals/:id/transaction-reference', validate(withdrawalIdParamsSchema, 'params'), validate(updateWithdrawalTransactionReferenceSchema), controller.updateWithdrawalTransactionReference);
 
 router.get('/sessions/chat', validate(adminPaginationSchema, 'query'), controller.listChatSessions);
 router.get('/sessions/call', validate(adminPaginationSchema, 'query'), controller.listCallSessions);

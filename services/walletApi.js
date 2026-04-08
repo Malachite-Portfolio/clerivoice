@@ -42,6 +42,31 @@ export const fetchWalletPlans = async () => {
   return response.data.data || [];
 };
 
+export const fetchWithdrawalConfig = async () => {
+  const response = await apiClient.get(API_ENDPOINTS.wallet.withdrawalConfig);
+  return response.data?.data || null;
+};
+
+export const fetchWithdrawalHistory = async ({ page = 1, limit = 20 } = {}) => {
+  const response = await apiClient.get(API_ENDPOINTS.wallet.withdrawalHistory, {
+    params: {
+      page,
+      limit,
+    },
+  });
+
+  return response.data?.data || { items: [], pagination: null };
+};
+
+export const requestWalletWithdrawal = async ({ amount, note } = {}) => {
+  const response = await apiClient.post(API_ENDPOINTS.wallet.withdrawalRequest, {
+    amount,
+    ...(note ? { note } : {}),
+  });
+
+  return response.data?.data || null;
+};
+
 export const fetchWalletHistory = async ({ page = 1, limit = 20, type } = {}) => {
   if (isDemoSessionActive()) {
     return getDemoWalletHistory({ page, limit, type });

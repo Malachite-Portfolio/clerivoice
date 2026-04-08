@@ -8,8 +8,20 @@ import {
 } from 'react-native';
 import theme from '../constants/theme';
 import { resolveAvatarSource } from '../services/avatarResolver';
+import {
+  getPresenceDotColor,
+  normalizePresenceStatus,
+  PRESENCE_STATUS,
+} from '../services/presenceStatus';
 
-const StoryAvatar = ({ name, image, online = false, onPress, avatarSeedId = null }) => {
+const StoryAvatar = ({
+  name,
+  image,
+  online = false,
+  presenceStatus = null,
+  onPress,
+  avatarSeedId = null,
+}) => {
   const initials = name.slice(0, 1).toUpperCase();
   const imageSource = resolveAvatarSource({
     avatarUrl: image,
@@ -17,6 +29,9 @@ const StoryAvatar = ({ name, image, online = false, onPress, avatarSeedId = null
     name,
     role: 'LISTENER',
   });
+  const status = normalizePresenceStatus(
+    presenceStatus || (online ? PRESENCE_STATUS.ONLINE : PRESENCE_STATUS.OFFLINE),
+  );
 
   return (
     <TouchableOpacity
@@ -32,7 +47,7 @@ const StoryAvatar = ({ name, image, online = false, onPress, avatarSeedId = null
             <Text style={styles.initials}>{initials}</Text>
           )}
         </View>
-        {online ? <View style={styles.onlineDot} /> : null}
+        <View style={[styles.onlineDot, { backgroundColor: getPresenceDotColor(status) }]} />
       </View>
       <Text style={styles.name} numberOfLines={1}>
         {name}
@@ -45,24 +60,23 @@ const styles = StyleSheet.create({
   container: {
     alignItems: 'center',
     marginRight: theme.spacing.sm,
-    width: 72,
+    width: 70,
   },
   outerRing: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    borderWidth: 1.6,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 1.8,
     borderColor: theme.colors.magenta,
-    borderStyle: 'dotted',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(42, 20, 48, 0.36)',
+    backgroundColor: 'rgba(23, 18, 35, 0.8)',
   },
   innerCircle: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#D8D8D8',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#C6C9A0',
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
@@ -79,19 +93,19 @@ const styles = StyleSheet.create({
   },
   onlineDot: {
     position: 'absolute',
-    right: 4,
-    bottom: 4,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    right: 1,
+    bottom: 3,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
     backgroundColor: theme.colors.success,
     borderWidth: 2,
-    borderColor: theme.colors.bgPrimary,
+    borderColor: '#130A20',
   },
   name: {
     marginTop: 5,
-    color: theme.colors.textSecondary,
-    fontSize: 12,
+    color: theme.colors.textMuted,
+    fontSize: 11,
     maxWidth: 72,
   },
 });

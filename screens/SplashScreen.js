@@ -108,7 +108,7 @@ const SplashScreen = ({ navigation }) => {
 
   return (
     <LinearGradient
-      colors={['#07010D', '#18041F', '#2A0A33']}
+      colors={theme.gradients.bg}
       style={styles.container}
     >
       <StatusBar style="light" />
@@ -143,26 +143,26 @@ const styles = StyleSheet.create({
   logoWrap: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 18,
+    marginBottom: 20,
   },
   glow: {
     position: 'absolute',
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: 'rgba(255, 17, 153, 0.22)',
+    width: 196,
+    height: 196,
+    borderRadius: 98,
+    backgroundColor: 'rgba(209, 11, 149, 0.24)',
     ...theme.shadow.glow,
   },
   logo: {
-    width: 188,
-    height: 72,
+    width: 194,
+    height: 76,
   },
   tagline: {
     color: theme.colors.textSecondary,
     textAlign: 'center',
-    fontSize: theme.typography.body,
+    fontSize: 14,
     letterSpacing: 0.2,
-    lineHeight: 23,
+    lineHeight: 22,
     maxWidth: 290,
   },
 });

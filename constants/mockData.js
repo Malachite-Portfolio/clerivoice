@@ -1,21 +1,21 @@
 export const onboardingSlides = [
   {
     id: 'slide-1',
+    title: 'Get rid of judgemental Zone',
+    subtitle: 'Talk with people freely',
+    image: require('../assets/images/slide3.jpg'),
+  },
+  {
+    id: 'slide-2',
     title: 'Share your feelings and be happy',
     subtitle: 'Feel happy',
     image: require('../assets/images/slide1.jpg'),
   },
   {
-    id: 'slide-2',
+    id: 'slide-3',
     title: 'Be 100% Anonymous and safe',
     subtitle: 'Privacy Guarantee',
     image: require('../assets/images/slide2.jpg'),
-  },
-  {
-    id: 'slide-3',
-    title: 'Get rid of judgemental Zone',
-    subtitle: 'Talk with people freely',
-    image: require('../assets/images/slide3.jpg'),
   },
 ];
 

@@ -10,6 +10,12 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
 import { resolveAvatarSource } from '../services/avatarResolver';
+import {
+  getPresenceDotColor,
+  getPresenceLabel,
+  normalizePresenceStatus,
+  PRESENCE_STATUS,
+} from '../services/presenceStatus';
 
 const toCurrencyPerMinute = (value) => {
   const amount = Number(value || 0);
@@ -62,6 +68,11 @@ const HostPreviewModal = ({
     'Private, verified support sessions are available with this host.';
   const callRateText = toCurrencyPerMinute(host?.callRatePerMinute || host?.callRate);
   const chatRateText = toCurrencyPerMinute(host?.chatRatePerMinute || host?.chatRate);
+  const presenceStatus = normalizePresenceStatus(
+    host?.availability || (host?.isOnline ? PRESENCE_STATUS.ONLINE : PRESENCE_STATUS.OFFLINE),
+  );
+  const canStartRealtimeSession = presenceStatus === PRESENCE_STATUS.ONLINE;
+  const presenceLabel = getPresenceLabel(presenceStatus);
 
   return (
     <Modal
@@ -81,7 +92,12 @@ const HostPreviewModal = ({
           onPress={() => {}}
         >
           <View style={styles.headerRow}>
-            <Image source={avatarSource} style={styles.avatar} />
+            <View style={styles.avatarWrap}>
+              <Image source={avatarSource} style={styles.avatar} />
+              <View
+                style={[styles.avatarStatusDot, { backgroundColor: getPresenceDotColor(presenceStatus) }]}
+              />
+            </View>
             <View style={styles.headerInfo}>
               <Text style={styles.name} numberOfLines={1}>
                 {host?.name || host?.displayName || 'Support Host'}
@@ -94,7 +110,11 @@ const HostPreviewModal = ({
                 ) : null}
               </View>
               <Text style={styles.statusText}>
-                {host?.isOnline ? 'Online now' : 'Currently offline'}
+                {presenceStatus === PRESENCE_STATUS.ONLINE
+                  ? 'Online now'
+                  : presenceStatus === PRESENCE_STATUS.BUSY
+                    ? 'Currently busy'
+                    : 'Currently offline'}
               </Text>
             </View>
           </View>
@@ -127,10 +147,10 @@ const HostPreviewModal = ({
                   style={[styles.actionButton, styles.chatButton]}
                   activeOpacity={0.85}
                   onPress={onChatNow}
-                  disabled={!host?.isOnline}
+                  disabled={!canStartRealtimeSession}
                 >
                   <Text style={styles.chatButtonText}>
-                    {host?.isOnline ? 'Chat' : 'Offline'}
+                    {canStartRealtimeSession ? 'Chat' : presenceLabel}
                   </Text>
                 </TouchableOpacity>
               ) : null}
@@ -138,14 +158,14 @@ const HostPreviewModal = ({
                 style={[
                   styles.actionButton,
                   styles.talkButton,
-                  !host?.isOnline ? styles.disabledAction : null,
+                  !canStartRealtimeSession ? styles.disabledAction : null,
                 ]}
                 activeOpacity={0.85}
                 onPress={onTalkNow}
-                disabled={!host?.isOnline}
+                disabled={!canStartRealtimeSession}
               >
                 <Text style={styles.talkButtonText}>
-                  {host?.isOnline ? 'Talk Now' : 'Offline'}
+                  {canStartRealtimeSession ? 'Talk Now' : presenceLabel}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -167,33 +187,46 @@ const styles = StyleSheet.create({
   card: {
     width: '96%',
     maxWidth: 460,
-    borderRadius: 22,
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(19, 10, 28, 0.98)',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    backgroundColor: 'rgba(18, 13, 28, 0.98)',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     ...theme.shadow.card,
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
+  avatarWrap: {
+    position: 'relative',
+    marginRight: 12,
+  },
   avatar: {
-    width: 82,
-    height: 82,
-    borderRadius: 41,
+    width: 78,
+    height: 78,
+    borderRadius: 39,
     borderWidth: 2,
     borderColor: theme.colors.magenta,
     backgroundColor: '#241A32',
-    marginRight: 12,
+  },
+  avatarStatusDot: {
+    position: 'absolute',
+    right: 1,
+    bottom: 1,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    borderWidth: 2,
+    borderColor: '#12071A',
   },
   headerInfo: {
     flex: 1,
   },
   name: {
     color: theme.colors.textPrimary,
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: '700',
   },
   ratingRow: {
@@ -238,7 +271,7 @@ const styles = StyleSheet.create({
   description: {
     marginTop: 12,
     color: theme.colors.textSecondary,
-    fontSize: 13,
+    fontSize: 12,
     lineHeight: 19,
   },
   footerRow: {
@@ -266,8 +299,8 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     minWidth: 88,
-    height: 38,
-    borderRadius: 12,
+    height: 40,
+    borderRadius: 999,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -297,4 +330,3 @@ const styles = StyleSheet.create({
 });
 
 export default HostPreviewModal;
-

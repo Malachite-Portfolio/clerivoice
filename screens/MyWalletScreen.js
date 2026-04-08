@@ -626,11 +626,11 @@ const styles = StyleSheet.create({
     paddingBottom: 28,
   },
   heroCard: {
-    borderRadius: 28,
+    borderRadius: 30,
     padding: 18,
     borderWidth: 1,
     borderColor: 'rgba(255,42,163,0.35)',
-    backgroundColor: 'rgba(27,12,37,0.96)',
+    backgroundColor: 'rgba(20, 14, 31, 0.96)',
     ...theme.shadow.card,
   },
   heroTop: {
@@ -694,7 +694,7 @@ const styles = StyleSheet.create({
   },
   tabButton: {
     flex: 1,
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
     backgroundColor: 'rgba(255,255,255,0.04)',
@@ -729,12 +729,12 @@ const styles = StyleSheet.create({
   },
   amountChip: {
     width: '47%',
-    borderRadius: 22,
+    borderRadius: 24,
     paddingVertical: 15,
     paddingHorizontal: 14,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(22,14,31,0.95)',
+    backgroundColor: 'rgba(20,14,30,0.95)',
   },
   amountChipActive: {
     borderColor: theme.colors.borderPink,
@@ -757,12 +757,12 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
   },
   summaryCard: {
-    borderRadius: 24,
+    borderRadius: 26,
     padding: 18,
     marginBottom: 18,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(23,13,34,0.96)',
+    backgroundColor: 'rgba(19,13,28,0.96)',
   },
   summaryRow: {
     flexDirection: 'row',
@@ -858,7 +858,7 @@ const styles = StyleSheet.create({
   },
   rechargeButton: {
     marginTop: 4,
-    borderRadius: 22,
+    borderRadius: 24,
     backgroundColor: theme.colors.magenta,
     minHeight: 56,
     alignItems: 'center',

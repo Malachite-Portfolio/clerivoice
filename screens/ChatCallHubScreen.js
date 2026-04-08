@@ -27,6 +27,13 @@ import { queryKeys } from '../services/queryClient';
 import { requestCallAudioPermissions } from '../services/audioPermissions';
 import { getCallStatusMessageByCode, getCallStatusMessageFromError } from '../services/callStatusMessage';
 import { isUserBlocked } from '../services/chatInteractionPrefs';
+import {
+  getPresenceDotColor,
+  getPresenceLabel,
+  normalizePresenceStatus,
+  PRESENCE_STATUS,
+  isPresenceOnline,
+} from '../services/presenceStatus';
 
 const hostQueryParams = {
   page: 1,
@@ -95,6 +102,7 @@ const ChatCallHubScreen = ({ navigation }) => {
   const liveHosts = useMemo(
     () =>
       hosts.map((item) => ({
+        availability: normalizePresenceStatus(item.availability || PRESENCE_STATUS.OFFLINE),
         listenerId: item.userId,
         id: item.userId,
         name: item.user?.displayName || 'Support Host',
@@ -102,7 +110,6 @@ const ChatCallHubScreen = ({ navigation }) => {
         chatRate: Number(item.chatRatePerMinute || 0),
         callRatePerMinute: Number(item.callRatePerMinute || 0),
         chatRatePerMinute: Number(item.chatRatePerMinute || 0),
-        availability: item.availability || 'OFFLINE',
         avatar: resolveAvatarUri({
           uploadedImageUrl: item?.user?.uploadedProfileImageUrl || null,
           profileImageUrl: item?.user?.profileImageUrl || null,
@@ -112,7 +119,7 @@ const ChatCallHubScreen = ({ navigation }) => {
           role: 'LISTENER',
         }),
         profileImageUrl: item?.user?.profileImageUrl || null,
-        isOnline: String(item.availability || '').toUpperCase() === 'ONLINE',
+        isOnline: isPresenceOnline(item.availability || PRESENCE_STATUS.OFFLINE),
         experienceYears: item.experienceYears || 0,
         experience: `${item.experienceYears || 0}+ yrs exp`,
         category: item.category || null,
@@ -316,17 +323,25 @@ const ChatCallHubScreen = ({ navigation }) => {
                       onPress={() => openHostPreviewCard(host)}
                       style={styles.avatarPressArea}
                     >
-                      <Image
-                        source={resolveAvatarSource({
-                          avatarUrl: host.avatar,
-                          profileImageUrl: host.profileImageUrl,
-                          id: host.listenerId,
-                          userId: host.listenerId,
-                          name: host.name,
-                          role: 'LISTENER',
-                        })}
-                        style={styles.avatar}
-                      />
+                      <View style={styles.avatarWrap}>
+                        <Image
+                          source={resolveAvatarSource({
+                            avatarUrl: host.avatar,
+                            profileImageUrl: host.profileImageUrl,
+                            id: host.listenerId,
+                            userId: host.listenerId,
+                            name: host.name,
+                            role: 'LISTENER',
+                          })}
+                          style={styles.avatar}
+                        />
+                        <View
+                          style={[
+                            styles.avatarStatusDot,
+                            { backgroundColor: getPresenceDotColor(host.availability) },
+                          ]}
+                        />
+                      </View>
                     </TouchableOpacity>
                     <View style={styles.hostInfo}>
                       <Text style={styles.hostName}>{host.name}</Text>
@@ -334,7 +349,7 @@ const ChatCallHubScreen = ({ navigation }) => {
                         {host.rating.toFixed(1)} | {host.experienceYears}+ yrs exp
                       </Text>
                       <Text style={styles.hostMeta}>
-                        {host.isOnline ? 'Online' : host.availability}
+                        {getPresenceLabel(host.availability)}
                       </Text>
                     </View>
                   </View>
@@ -346,20 +361,20 @@ const ChatCallHubScreen = ({ navigation }) => {
 
                   <View style={styles.actionsRow}>
                     <TouchableOpacity
-                      style={[styles.actionButton, styles.chatButton, !host.isOnline && styles.disabledAction]}
+                      style={[styles.actionButton, styles.chatButton, !isPresenceOnline(host.availability) && styles.disabledAction]}
                       onPress={() => openChat(host)}
                       activeOpacity={0.85}
-                      disabled={!host.isOnline}
+                      disabled={!isPresenceOnline(host.availability)}
                     >
                       <Ionicons name="chatbubble-ellipses-outline" size={16} color={theme.colors.textPrimary} />
                       <Text style={styles.actionText}>Start Chat</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={[styles.actionButton, styles.callButton, !host.isOnline && styles.disabledAction]}
+                      style={[styles.actionButton, styles.callButton, !isPresenceOnline(host.availability) && styles.disabledAction]}
                       onPress={() => openCall(host)}
                       activeOpacity={0.85}
-                      disabled={!host.isOnline}
+                      disabled={!isPresenceOnline(host.availability)}
                     >
                       <Ionicons name="call-outline" size={16} color={theme.colors.textPrimary} />
                       <Text style={styles.actionText}>Start Call</Text>
@@ -433,12 +448,12 @@ const styles = StyleSheet.create({
   },
   walletCard: {
     marginTop: 16,
-    borderRadius: 20,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: theme.colors.borderPink,
-    backgroundColor: 'rgba(255, 42, 163, 0.09)',
+    backgroundColor: 'rgba(209, 11, 149, 0.12)',
     paddingHorizontal: 14,
-    paddingVertical: 13,
+    paddingVertical: 14,
   },
   walletLabel: {
     color: theme.colors.textSecondary,
@@ -522,10 +537,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   hostCard: {
-    borderRadius: 20,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
-    backgroundColor: theme.colors.glassStrong,
+    backgroundColor: 'rgba(19,13,28,0.96)',
     padding: 12,
     marginBottom: 12,
   },
@@ -536,12 +551,25 @@ const styles = StyleSheet.create({
   avatarPressArea: {
     marginRight: 10,
   },
+  avatarWrap: {
+    position: 'relative',
+  },
   avatar: {
     width: 66,
     height: 66,
     borderRadius: 33,
     borderWidth: 1.5,
     borderColor: theme.colors.magenta,
+  },
+  avatarStatusDot: {
+    position: 'absolute',
+    right: 2,
+    bottom: 2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: theme.colors.bgPrimary,
   },
   hostInfo: {
     flex: 1,

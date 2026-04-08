@@ -22,7 +22,7 @@ const WalletPill = ({ amount, onPress, style }) => {
         color={theme.colors.textPrimary}
         style={styles.icon}
       />
-      <Text style={styles.amount}>INR {amount}</Text>
+      <Text style={styles.amount}>{'\u20B9'} {amount}</Text>
     </Container>
   );
 };
@@ -31,20 +31,21 @@ const styles = StyleSheet.create({
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(203, 25, 143, 0.25)',
+    backgroundColor: 'rgba(152, 37, 117, 0.23)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 42, 163, 0.45)',
-    borderRadius: 18,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
+    borderColor: 'rgba(152, 37, 117, 0.7)',
+    borderRadius: 22,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   icon: {
     marginRight: 5,
   },
   amount: {
     color: theme.colors.textPrimary,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
+    letterSpacing: 0.2,
   },
 });
 

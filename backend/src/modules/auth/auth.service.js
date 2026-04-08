@@ -78,25 +78,12 @@ const buildPhoneVariants = (phone) => {
 
   return [...variants].filter(Boolean);
 };
-const DEMO_LISTENER_ID = '000000101';
-const DEMO_LISTENER_PHONE = '+910000000101';
-const DEMO_LISTENER_PASSWORD = '12345678';
-const FIXED_TEST_USER_PHONES = Object.freeze([
-  '+910000000201',
-  '+910000000202',
-  '+910000000203',
-  '+910000000204',
-  '+910000000205',
-  '+910000000206',
-]);
-const FIXED_TEST_LISTENER_PHONES = Object.freeze([
-  '+910000000101',
-  '+910000000102',
-  '+910000000103',
-  '+910000000104',
-  '+910000000105',
-  '+910000000106',
-]);
+const isNonProduction = env.NODE_ENV !== 'production';
+const parseEnvList = (value) =>
+  String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 const maskIdentity = (value) => {
   const input = String(value || '').trim();
   if (!input) return '';
@@ -106,6 +93,10 @@ const maskIdentity = (value) => {
   }
   if (input.length <= 4) return '****';
   return `${input.slice(0, 2)}***${input.slice(-2)}`;
+};
+const getConfiguredTestPhones = ({ primary, listA, listB }) => {
+  const values = [...parseEnvList(primary), ...parseEnvList(listA), ...parseEnvList(listB)];
+  return [...new Set(values)];
 };
 
 const buildAllowedPhoneSet = (...phones) => {
@@ -117,9 +108,23 @@ const buildAllowedPhoneSet = (...phones) => {
   return new Set(values);
 };
 
-const isTestAuthEnabled = () => env.ENABLE_TEST_AUTH;
-const getAllowedTestUserPhones = () => buildAllowedPhoneSet(...FIXED_TEST_USER_PHONES);
-const getAllowedTestListenerPhones = () => buildAllowedPhoneSet(...FIXED_TEST_LISTENER_PHONES);
+const isTestAuthEnabled = () => isNonProduction && env.ENABLE_TEST_AUTH;
+const getAllowedTestUserPhones = () =>
+  buildAllowedPhoneSet(
+    ...getConfiguredTestPhones({
+      primary: env.TEST_USER_PHONE,
+      listA: env.TEST_USER_PHONES,
+      listB: env.TEST_USER_NUMBERS,
+    }),
+  );
+const getAllowedTestListenerPhones = () =>
+  buildAllowedPhoneSet(
+    ...getConfiguredTestPhones({
+      primary: env.TEST_LISTENER_PHONE,
+      listA: env.TEST_LISTENER_PHONES,
+      listB: env.TEST_LISTENER_NUMBERS,
+    }),
+  );
 const isTestUserPhone = (phone) =>
   getAllowedTestUserPhones().has(normalizePhone(phone)) ||
   buildPhoneVariants(phone).some((variant) => getAllowedTestUserPhones().has(variant));
@@ -250,96 +255,6 @@ const verifyOtpChallenge = async ({ normalizedPhone, purpose, otpRecord, otp }) 
   return otpRecord;
 };
 
-const buildDemoListenerAuthResponse = async ({ deviceId, deviceInfo, ipAddress, userAgent }) => {
-  const passwordHash = await bcrypt.hash(DEMO_LISTENER_PASSWORD, 10);
-
-  const listenerUser = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.upsert({
-      where: { phone: DEMO_LISTENER_PHONE },
-      update: {
-        role: 'LISTENER',
-        status: 'ACTIVE',
-        passwordHash,
-        displayName: 'Demo Listener',
-        isPhoneVerified: true,
-        deletedAt: null,
-      },
-      create: {
-        phone: DEMO_LISTENER_PHONE,
-        role: 'LISTENER',
-        status: 'ACTIVE',
-        passwordHash,
-        displayName: 'Demo Listener',
-        isPhoneVerified: true,
-      },
-    });
-
-    await tx.listenerProfile.upsert({
-      where: { userId: user.id },
-      update: {
-        availability: 'ONLINE',
-        isEnabled: true,
-      },
-      create: {
-        userId: user.id,
-        bio: 'Demo listener account',
-        rating: 4.9,
-        experienceYears: 3,
-        languages: ['English', 'Hindi'],
-        category: 'Emotional Support',
-        callRatePerMinute: 15,
-        chatRatePerMinute: 10,
-        availability: 'ONLINE',
-        isEnabled: true,
-      },
-    });
-
-    await tx.wallet.upsert({
-      where: { userId: user.id },
-      update: {},
-      create: {
-        userId: user.id,
-        currency: 'INR',
-      },
-    });
-
-    return tx.user.findUnique({
-      where: { id: user.id },
-      include: { listenerProfile: true },
-    });
-  }, {
-    maxWait: 10000,
-    timeout: 20000,
-  });
-
-  const tokens = await issueTokensForSession({
-    user: listenerUser,
-    deviceId,
-    deviceInfo,
-    ipAddress,
-    userAgent,
-  });
-
-  return {
-    user: {
-      id: listenerUser.id,
-      phone: listenerUser.phone,
-      email: listenerUser.email,
-      displayName: listenerUser.displayName,
-      role: listenerUser.role,
-      status: listenerUser.status,
-      listenerProfile: {
-        availability: listenerUser.listenerProfile.availability,
-        callRatePerMinute: listenerUser.listenerProfile.callRatePerMinute,
-        chatRatePerMinute: listenerUser.listenerProfile.chatRatePerMinute,
-        isEnabled: listenerUser.listenerProfile.isEnabled,
-      },
-    },
-    ...tokens,
-    demoMode: true,
-  };
-};
-
 const issueTokensForSession = async ({ user, deviceId, deviceInfo, ipAddress, userAgent }) => {
   const accessToken = signAccessToken({
     sub: user.id,
@@ -378,20 +293,22 @@ const issueTokensForSession = async ({ user, deviceId, deviceInfo, ipAddress, us
 const sendOtp = async ({ phone, purpose }) => {
   const normalizedPhone = normalizePhone(phone);
   const isTestNumber = isTestAuthEnabled() && isTestUserPhone(normalizedPhone);
-  const useLegacyDemoOtp = env.DEMO_OTP_MODE;
+  const useLegacyDemoOtp = isNonProduction && env.DEMO_OTP_MODE;
+  const fixedTestOtp = String(env.TEST_AUTH_FIXED_OTP || '').trim();
+  const useFixedTestOtp = isTestNumber && Boolean(fixedTestOtp);
   logger.info('[Auth] sendOtp started', {
     phone: maskIdentity(normalizedPhone),
     incomingPhone: maskIdentity(phone),
     phoneVariants: buildPhoneVariants(phone).map(maskIdentity),
     purpose,
-    demoMode: env.DEMO_OTP_MODE,
+    demoMode: useLegacyDemoOtp,
     testAuthEnabled: isTestAuthEnabled(),
     isTestNumber,
     allowedTestPhones: buildMaskedAllowedPhoneList('USER'),
   });
 
-  const otp = isTestNumber
-    ? env.TEST_AUTH_FIXED_OTP
+  const otp = useFixedTestOtp
+    ? fixedTestOtp
     : useLegacyDemoOtp
       ? env.DEMO_OTP_CODE
       : String(Math.floor(100000 + Math.random() * 900000));
@@ -401,7 +318,7 @@ const sendOtp = async ({ phone, purpose }) => {
     purpose,
     otp,
     metadata:
-      isTestNumber
+      useFixedTestOtp
         ? { role: 'USER', testAuth: true }
         : useLegacyDemoOtp
           ? { role: 'USER', legacyDemoOtp: true }
@@ -675,6 +592,7 @@ const loginUserWithOtp = async (payload) => {
 const sendListenerOtp = async ({ phone, purpose = 'LOGIN' }) => {
   const normalizedPhone = normalizePhone(phone);
   const isAllowedTestNumber = isTestAuthEnabled() && isTestListenerPhone(normalizedPhone);
+  const fixedTestOtp = String(env.TEST_AUTH_FIXED_OTP || '').trim();
 
   logger.info('[Auth] sendListenerOtp started', {
     phone: maskIdentity(normalizedPhone),
@@ -694,10 +612,18 @@ const sendListenerOtp = async ({ phone, purpose = 'LOGIN' }) => {
     );
   }
 
+  if (!fixedTestOtp) {
+    throw new AppError(
+      'Listener test OTP is misconfigured. TEST_AUTH_FIXED_OTP is required.',
+      500,
+      'LISTENER_TEST_AUTH_MISCONFIGURED'
+    );
+  }
+
   return createOtpChallenge({
     normalizedPhone,
     purpose,
-    otp: env.TEST_AUTH_FIXED_OTP,
+    otp: fixedTestOtp,
     metadata: {
       role: 'LISTENER',
       testAuth: true,
@@ -897,19 +823,6 @@ const loginListenerWithPassword = async ({
     identity: maskedIdentity,
     hasPassword: Boolean(password),
   });
-
-  if (
-    env.DEMO_LISTENER_LOGIN_BYPASS &&
-    rawIdentity === DEMO_LISTENER_ID &&
-    String(password || '') === DEMO_LISTENER_PASSWORD
-  ) {
-    return buildDemoListenerAuthResponse({
-      deviceId,
-      deviceInfo,
-      ipAddress,
-      userAgent,
-    });
-  }
 
   if (!rawIdentity) {
     throw new AppError(

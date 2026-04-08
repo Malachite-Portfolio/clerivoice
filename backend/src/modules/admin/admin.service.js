@@ -2,6 +2,7 @@ const { prisma } = require('../../config/prisma');
 const walletService = require('../../services/wallet.service');
 const callService = require('../call/call.service');
 const chatService = require('../chat/chat.service');
+const withdrawalService = require('../withdrawal/withdrawal.service');
 const {
   SYNC_EVENTS,
   emitEvent,
@@ -269,6 +270,56 @@ const listWalletLedger = async ({ page, limit, userId }) => {
   };
 };
 
+const listWithdrawals = async ({ page = 1, limit = 20, status, listenerId }) => {
+  return withdrawalService.listAdminWithdrawals({
+    page,
+    limit,
+    status,
+    listenerId,
+  });
+};
+
+const getWithdrawalById = async ({ withdrawalId }) => {
+  return withdrawalService.getAdminWithdrawalById({ withdrawalId });
+};
+
+const updateWithdrawalStatus = async ({
+  adminId,
+  withdrawalId,
+  status,
+  adminNote,
+  transactionReference,
+}) =>
+  withdrawalService.updateWithdrawalStatus({
+    adminId,
+    withdrawalId,
+    status,
+    adminNote,
+    transactionReference,
+  });
+
+const updateWithdrawalAdminNote = async ({
+  adminId,
+  withdrawalId,
+  adminNote,
+}) =>
+  withdrawalService.updateWithdrawalAdminNote({
+    adminId,
+    withdrawalId,
+    adminNote,
+  });
+
+const updateWithdrawalTransactionReference = async ({
+  adminId,
+  withdrawalId,
+  transactionReference,
+}) =>
+  withdrawalService.updateWithdrawalTransactionReference({
+    adminId,
+    withdrawalId,
+    transactionReference,
+  });
+
 const listChatSessions = async ({ page, limit }) => {
   const skip = (page - 1) * limit;
   const [items, total] = await Promise.all([
@@ -421,6 +472,11 @@ module.exports = {
   updateListenerVisibility,
   removeListenerSoft,
   listWalletLedger,
+  listWithdrawals,
+  getWithdrawalById,
+  updateWithdrawalStatus,
+  updateWithdrawalAdminNote,
+  updateWithdrawalTransactionReference,
   listChatSessions,
   listCallSessions,
   manualWalletAdjustment,

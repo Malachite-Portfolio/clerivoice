@@ -52,6 +52,33 @@ const updateReferralRuleSchema = z.object({
   qualifyingAmount: z.coerce.number().positive(),
 });
 
+const withdrawalIdParamsSchema = z.object({
+  id: z.string().min(10),
+});
+
+const withdrawalListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+  status: z
+    .enum(['PENDING', 'APPROVED', 'REJECTED', 'IN_PROGRESS', 'PAYMENT_DONE'])
+    .optional(),
+  listenerId: z.string().min(10).optional(),
+});
+
+const updateWithdrawalStatusSchema = z.object({
+  status: z.enum(['APPROVED', 'REJECTED', 'IN_PROGRESS', 'PAYMENT_DONE']),
+  adminNote: z.string().max(1000).optional(),
+  transactionReference: z.string().max(120).optional(),
+});
+
+const updateWithdrawalAdminNoteSchema = z.object({
+  adminNote: z.string().trim().min(1).max(1000),
+});
+
+const updateWithdrawalTransactionReferenceSchema = z.object({
+  transactionReference: z.string().trim().min(3).max(120),
+});
+
 module.exports = {
   adminPaginationSchema,
   updateListenerRatesSchema,
@@ -62,4 +89,9 @@ module.exports = {
   createRechargePlanSchema,
   updateRechargePlanSchema,
   updateReferralRuleSchema,
+  withdrawalIdParamsSchema,
+  withdrawalListQuerySchema,
+  updateWithdrawalStatusSchema,
+  updateWithdrawalAdminNoteSchema,
+  updateWithdrawalTransactionReferenceSchema,
 };

@@ -28,14 +28,14 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.sm,
   },
   title: {
-    color: theme.colors.magenta,
-    fontSize: theme.typography.body,
-    fontWeight: '600',
+    color: theme.colors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
   },
   action: {
     color: theme.colors.textSecondary,
-    fontSize: theme.typography.caption,
-    fontWeight: '500',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
 

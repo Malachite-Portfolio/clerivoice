@@ -122,10 +122,6 @@ const hydrateFallbackAvatar = async (user) => {
       data: { profileImageUrl: fallbackAvatarUrl },
       include: USER_INCLUDE,
     });
-    console.log('[Profile] fallbackAvatarAssigned', {
-      userId: user.id,
-      profileImageUrl: fallbackAvatarUrl,
-    });
     return updated;
   } catch (_error) {
     return {
@@ -173,11 +169,6 @@ const uploadProfileAvatar = async (userId, file, requestMeta = {}) => {
   const publicImageUrl = buildPublicProfileImageUrl(relativeFilePath, requestMeta);
 
   await cleanupOldUploadedAvatar(currentUser?.profileImageUrl);
-  console.log('[Profile] avatarFileStored', {
-    userId,
-    fileName,
-    relativeFilePath,
-  });
 
   return prisma.user.update({
     where: { id: userId },

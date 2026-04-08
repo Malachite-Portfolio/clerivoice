@@ -14,12 +14,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
+import { useQueryClient } from '@tanstack/react-query';
 import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import theme from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import { resolveAvatarSource } from '../services/avatarResolver';
 import { isUnauthorizedApiError } from '../services/apiClient';
 import { getMyProfile, updateMyProfile, uploadMyProfileAvatar } from '../services/profileApi';
+import { queryKeys } from '../services/queryClient';
 
 const logProfileDebug = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
@@ -53,6 +55,7 @@ const isAllowedProfileImage = (asset = {}) => {
 
 const ProfileScreen = ({ navigation, route }) => {
   const { session, setSession } = useAuth();
+  const queryClient = useQueryClient();
   const profileMode = String(route?.params?.profileMode || 'self').trim().toLowerCase();
   const externalProfile = route?.params?.profileData || null;
   const showExternalProfile = profileMode === 'counterparty' && Boolean(externalProfile);
@@ -320,6 +323,11 @@ const ProfileScreen = ({ navigation, route }) => {
 
       setSelectedImageAsset(null);
       setIsEditorVisible(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.hosts.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.listener.dashboard }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all }),
+      ]);
       Alert.alert('Profile updated', 'Your profile picture has been updated.');
       logProfileDebug('profileUpdateSuccess', {
         role: roleLabel,
@@ -339,7 +347,15 @@ const ProfileScreen = ({ navigation, route }) => {
     } finally {
       setIsSavingAvatar(false);
     }
-  }, [avatarInput, roleLabel, selectedImageAsset, selfProfile, session, setSession]);
+  }, [
+    avatarInput,
+    queryClient,
+    roleLabel,
+    selectedImageAsset,
+    selfProfile,
+    session,
+    setSession,
+  ]);
 
   return (
     <LinearGradient colors={theme.gradients.bg} style={styles.container}>
@@ -506,7 +522,7 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
   card: {
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
     backgroundColor: theme.colors.glassStrong,
@@ -515,9 +531,9 @@ const styles = StyleSheet.create({
     ...theme.shadow.card,
   },
   avatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
+    width: 96,
+    height: 96,
+    borderRadius: 48,
     marginBottom: 14,
     borderWidth: 2,
     borderColor: theme.colors.magenta,
@@ -542,7 +558,7 @@ const styles = StyleSheet.create({
   },
   name: {
     color: theme.colors.textPrimary,
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: '700',
   },
   phone: {

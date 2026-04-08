@@ -1,5 +1,6 @@
 import { apiClient } from './apiClient';
 import { logAuthError, logAuthRequest, logAuthResponse } from './authRequestLogger';
+import { getAuthDeviceContext } from './authDeviceContext';
 
 export const LISTENER_AUTH_ENDPOINTS = {
   sendOtp: '/auth/send-listener-otp',
@@ -46,7 +47,9 @@ export const sendListenerOtp = async (phone) => {
   logAuthRequest('sendListenerOtp', LISTENER_AUTH_ENDPOINTS.sendOtp, requestBody);
 
   try {
-    const response = await apiClient.post(LISTENER_AUTH_ENDPOINTS.sendOtp, requestBody);
+    const response = await apiClient.post(LISTENER_AUTH_ENDPOINTS.sendOtp, requestBody, {
+      skipAuth: true,
+    });
     logAuthResponse('sendListenerOtp', response, LISTENER_AUTH_ENDPOINTS.sendOtp);
     const data = assertOtpSendAcknowledged(response);
 
@@ -59,10 +62,9 @@ export const sendListenerOtp = async (phone) => {
     if (shouldFallbackToUserOtpEndpoints(primaryError)) {
       logAuthRequest('sendListenerOtpFallback', USER_AUTH_FALLBACK_ENDPOINTS.sendOtp, requestBody);
       try {
-        const fallbackResponse = await apiClient.post(
-          USER_AUTH_FALLBACK_ENDPOINTS.sendOtp,
-          requestBody,
-        );
+        const fallbackResponse = await apiClient.post(USER_AUTH_FALLBACK_ENDPOINTS.sendOtp, requestBody, {
+          skipAuth: true,
+        });
         logAuthResponse(
           'sendListenerOtpFallback',
           fallbackResponse,
@@ -93,16 +95,21 @@ export const sendListenerOtp = async (phone) => {
 };
 
 export const verifyListenerOtp = async ({ phone, otp }) => {
+  const deviceContext = await getAuthDeviceContext();
   const requestBody = {
     phone,
     otp,
     purpose: 'LOGIN',
+    deviceId: deviceContext?.deviceId || undefined,
+    deviceInfo: deviceContext?.deviceInfo || undefined,
   };
 
   logAuthRequest('verifyListenerOtp', LISTENER_AUTH_ENDPOINTS.verifyOtp, requestBody);
 
   try {
-    const response = await apiClient.post(LISTENER_AUTH_ENDPOINTS.verifyOtp, requestBody);
+    const response = await apiClient.post(LISTENER_AUTH_ENDPOINTS.verifyOtp, requestBody, {
+      skipAuth: true,
+    });
     logAuthResponse('verifyListenerOtp', response, LISTENER_AUTH_ENDPOINTS.verifyOtp);
     return response.data.data;
   } catch (primaryError) {
@@ -112,6 +119,9 @@ export const verifyListenerOtp = async ({ phone, otp }) => {
         const fallbackResponse = await apiClient.post(
           USER_AUTH_FALLBACK_ENDPOINTS.verifyOtp,
           requestBody,
+          {
+            skipAuth: true,
+          },
         );
         logAuthResponse(
           'verifyListenerOtpFallback',

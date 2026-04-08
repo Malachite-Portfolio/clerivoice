@@ -14,16 +14,18 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import theme from '../constants/theme';
-import { API_BASE_URL, AUTH_DEBUG_ENABLED } from '../constants/api';
+import { AUTH_DEBUG_ENABLED } from '../constants/api';
 import AppLogo from '../components/AppLogo';
-import {
-  LISTENER_AUTH_ENDPOINTS,
-  sendListenerOtp,
-  verifyListenerOtp,
-} from '../services/listenerAuthApi';
+import { sendFirebaseOtp, verifyFirebaseOtpCode } from '../services/firebasePhoneAuth';
+import { loginWithFirebaseIdentity } from '../services/firebaseLoginApi';
 import { useAuth } from '../context/AuthContext';
 import { getHomeRouteName } from '../navigation/navigationRef';
 import { normalizeIndianPhoneInput, toIndianE164 } from '../services/authPhone';
+import {
+  getBackendFirebaseLoginErrorMessage,
+  getFirebaseAuthErrorCode,
+  getFirebaseAuthErrorMessage,
+} from '../services/firebaseAuthErrorMessage';
 
 const logListenerAuthDebug = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
@@ -41,6 +43,7 @@ const ListenerLoginScreen = ({ navigation }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [otpStep, setOtpStep] = useState(false);
+  const [verificationId, setVerificationId] = useState('');
 
   const isValidPhone = useMemo(() => /^\d{10}$/.test(phone), [phone]);
   const isValidOtp = useMemo(() => /^\d{6}$/.test(otp), [otp]);
@@ -50,6 +53,7 @@ const ListenerLoginScreen = ({ navigation }) => {
     if (otpStep) {
       setOtpStep(false);
       setOtp('');
+      setVerificationId('');
       setError('');
       return;
     }
@@ -58,19 +62,10 @@ const ListenerLoginScreen = ({ navigation }) => {
   };
 
   const onSendOtp = async () => {
-    const endpoint = LISTENER_AUTH_ENDPOINTS.sendOtp;
-    const finalApiUrl = `${API_BASE_URL}${endpoint}`;
-
     logListenerAuthDebug('sendOtpPressed', {
       rawPhoneEntered: rawPhoneInput,
       normalizedPhone,
       isValidPhone,
-      otpSendEndpointCalled: endpoint,
-      finalApiUrl,
-      requestPayload: {
-        phone: normalizedPhone,
-        purpose: 'LOGIN',
-      },
     });
 
     if (!isValidPhone) {
@@ -82,31 +77,26 @@ const ListenerLoginScreen = ({ navigation }) => {
     setError('');
 
     try {
-      const response = await sendListenerOtp(normalizedPhone);
+      const response = await sendFirebaseOtp(normalizedPhone);
 
-      logListenerAuthDebug('sendOtpSuccess', {
-        finalApiUrl,
+      logListenerAuthDebug('firebaseSendOtpSuccess', {
         normalizedPhone,
-        status: response?.status ?? null,
-        responseBody: response?.body ?? null,
+        verificationIdReceived: Boolean(response?.verificationId),
       });
 
+      setVerificationId(String(response?.verificationId || '').trim());
       setOtp('');
       setOtpStep(true);
-    } catch (apiError) {
-      logListenerAuthDebug('sendOtpFailure', {
-        finalApiUrl,
+    } catch (firebaseError) {
+      logListenerAuthDebug('firebaseSendOtpFailure', {
         normalizedPhone,
-        status: apiError?.response?.status ?? null,
-        responseBody: apiError?.response?.data ?? null,
-        backendErrorResponseBody: apiError?.response?.data ?? null,
-        message: apiError?.message || 'Unknown error',
+        code: getFirebaseAuthErrorCode(firebaseError),
+        message: firebaseError?.message || 'Unknown error',
       });
 
-      const message =
-        apiError?.response?.data?.message ||
-        apiError?.message ||
-        'Unable to send listener OTP right now. Please try again.';
+      const message = getFirebaseAuthErrorMessage(firebaseError, {
+        action: 'send',
+      });
       setError(message);
       Alert.alert('OTP Failed', message);
     } finally {
@@ -115,20 +105,11 @@ const ListenerLoginScreen = ({ navigation }) => {
   };
 
   const onVerifyOtp = async () => {
-    const endpoint = LISTENER_AUTH_ENDPOINTS.verifyOtp;
-    const finalApiUrl = `${API_BASE_URL}${endpoint}`;
-
-    logListenerAuthDebug('verifyOtpPressed', {
+    logListenerAuthDebug('verifyOtpRequestStarted', {
       rawPhoneEntered: rawPhoneInput,
       normalizedPhone,
       otpLength: otp.length,
-      otpVerifyEndpointCalled: endpoint,
-      finalApiUrl,
-      requestPayload: {
-        phone: normalizedPhone,
-        otp,
-        purpose: 'LOGIN',
-      },
+      hasVerificationId: Boolean(verificationId),
     });
 
     if (!isValidOtp) {
@@ -136,47 +117,84 @@ const ListenerLoginScreen = ({ navigation }) => {
       return;
     }
 
+    if (!verificationId) {
+      const message = 'OTP session expired. Please resend OTP.';
+      setError(message);
+      Alert.alert('OTP Verification Failed', message);
+      return;
+    }
+
     setLoading(true);
     setError('');
 
     try {
-      const auth = await verifyListenerOtp({
-        phone: normalizedPhone,
-        otp,
+      const firebaseVerification = await verifyFirebaseOtpCode({
+        verificationId,
+        code: otp,
       });
+      const firebaseUid = String(firebaseVerification?.firebaseUid || '').trim();
 
-      logListenerAuthDebug('verifyOtpSuccess', {
-        finalApiUrl,
+      logListenerAuthDebug('firebaseVerifyOtpSuccess', {
         normalizedPhone,
-        hasAccessToken: Boolean(auth?.accessToken),
-        role: auth?.user?.role || null,
-        listenerId: auth?.user?.id || null,
+        firebaseUid,
+        hasFirebaseUid: Boolean(firebaseUid),
       });
 
-      await setSession({
-        user: auth.user,
-        accessToken: auth.accessToken,
-        refreshToken: auth.refreshToken,
-      });
+      try {
+        logListenerAuthDebug('backendFirebaseLoginRequestStarted', {
+          normalizedPhone,
+          role: 'listener',
+          firebaseUid,
+        });
 
-      navigation.reset({
-        index: 0,
-        routes: [{ name: getHomeRouteName() }],
-      });
-    } catch (apiError) {
-      logListenerAuthDebug('verifyOtpFailure', {
-        finalApiUrl,
+        const auth = await loginWithFirebaseIdentity({
+          phone: normalizedPhone,
+          firebaseUid,
+          role: 'listener',
+          displayName: `Anonymous-${normalizedPhone.slice(-4)}`,
+        });
+
+        logListenerAuthDebug('backendFirebaseLoginSuccess', {
+          normalizedPhone,
+          firebaseUid,
+          hasAccessToken: Boolean(auth?.accessToken),
+          role: auth?.user?.role || null,
+          listenerId: auth?.user?.id || null,
+        });
+
+        await setSession({
+          user: auth.user,
+          accessToken: auth.accessToken,
+          refreshToken: auth.refreshToken,
+        });
+
+        navigation.reset({
+          index: 0,
+          routes: [{ name: getHomeRouteName() }],
+        });
+      } catch (backendError) {
+        logListenerAuthDebug('backendFirebaseLoginFailure', {
+          normalizedPhone,
+          firebaseUid,
+          status: backendError?.response?.status ?? null,
+          responseBody: backendError?.response?.data ?? null,
+          message: backendError?.message || 'Unknown error',
+        });
+
+        const message = getBackendFirebaseLoginErrorMessage(backendError);
+        setError(message);
+        Alert.alert('Login Failed', message);
+      }
+    } catch (firebaseError) {
+      logListenerAuthDebug('firebaseVerifyOtpFailure', {
         normalizedPhone,
-        status: apiError?.response?.status ?? null,
-        responseBody: apiError?.response?.data ?? null,
-        backendErrorResponseBody: apiError?.response?.data ?? null,
-        message: apiError?.message || 'Unknown error',
+        code: getFirebaseAuthErrorCode(firebaseError),
+        message: firebaseError?.message || 'Unknown error',
       });
 
-      const message =
-        apiError?.response?.data?.message ||
-        apiError?.message ||
-        'Unable to verify listener OTP right now. Please try again.';
+      const message = getFirebaseAuthErrorMessage(firebaseError, {
+        action: 'verify',
+      });
       setError(message);
       Alert.alert('OTP Verification Failed', message);
     } finally {
@@ -190,7 +208,7 @@ const ListenerLoginScreen = ({ navigation }) => {
     : 'Enter your listener phone number to continue securely.';
 
   return (
-    <LinearGradient colors={['#05020D', '#070113', '#130322']} style={styles.container}>
+    <LinearGradient colors={theme.gradients.bg} style={styles.container}>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <KeyboardAvoidingView
           style={styles.flex}
@@ -288,6 +306,16 @@ const ListenerLoginScreen = ({ navigation }) => {
               </Text>
             )}
           </TouchableOpacity>
+
+          {!otpStep ? (
+            <TouchableOpacity
+              style={styles.onboardingLink}
+              activeOpacity={0.82}
+              onPress={() => navigation.navigate('ListenerOnboarding')}
+            >
+              <Text style={styles.onboardingLinkText}>New listener? Start onboarding</Text>
+            </TouchableOpacity>
+          ) : null}
         </KeyboardAvoidingView>
       </SafeAreaView>
     </LinearGradient>
@@ -297,7 +325,7 @@ const ListenerLoginScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1 },
-  flex: { flex: 1, paddingHorizontal: 22, paddingTop: 8 },
+  flex: { flex: 1, paddingHorizontal: 20, paddingTop: 8 },
   backButton: {
     width: 40,
     height: 40,
@@ -308,18 +336,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  logo: { marginTop: 20, alignSelf: 'flex-start' },
+  logo: { marginTop: 16, alignSelf: 'flex-start' },
   title: {
-    marginTop: 28,
+    marginTop: 24,
     color: theme.colors.textPrimary,
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: '700',
   },
   subtitle: {
     marginTop: 8,
-    color: theme.colors.textSecondary,
+    color: 'rgba(255,255,255,0.7)',
     fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 22,
   },
   fieldWrap: { marginTop: 22 },
   label: {
@@ -328,21 +356,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   input: {
-    height: 54,
-    borderRadius: 16,
+    height: 56,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: 'rgba(18, 13, 28, 0.96)',
     color: theme.colors.textPrimary,
     paddingHorizontal: 14,
     fontSize: 15,
   },
   phoneInputWrap: {
-    height: 54,
-    borderRadius: 16,
+    height: 56,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: theme.colors.borderSoft,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: 'rgba(18, 13, 28, 0.96)',
     flexDirection: 'row',
     alignItems: 'center',
   },
@@ -368,8 +396,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   infoChip: {
-    minHeight: 52,
-    borderRadius: 16,
+    minHeight: 54,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: 'rgba(255, 42, 163, 0.28)',
     backgroundColor: 'rgba(255, 42, 163, 0.12)',
@@ -397,11 +425,11 @@ const styles = StyleSheet.create({
   },
   loginButton: {
     marginTop: 24,
-    height: 54,
-    borderRadius: 27,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: theme.colors.magenta,
     borderWidth: 1,
-    borderColor: 'rgba(255, 42, 163, 0.9)',
+    borderColor: 'rgba(207, 36, 155, 0.78)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -410,6 +438,17 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '700',
+  },
+  onboardingLink: {
+    marginTop: 14,
+    alignSelf: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  onboardingLinkText: {
+    color: theme.colors.textSecondary,
+    fontSize: 13,
+    textDecorationLine: 'underline',
   },
 });
 

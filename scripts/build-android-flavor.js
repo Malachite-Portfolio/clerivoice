@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const SUPPORTED_FLAVORS = new Set(['user', 'listener']);
+const SUPPORTED_MODES = new Set(['apk', 'bundle']);
 
 const parseEnvFile = (filePath) => {
   const content = fs.readFileSync(filePath, 'utf8');
@@ -32,8 +33,15 @@ const parseEnvFile = (filePath) => {
 
 const run = async () => {
   const flavor = String(process.argv[2] || '').trim().toLowerCase();
+  const mode = String(process.argv[3] || 'apk').trim().toLowerCase();
+
   if (!SUPPORTED_FLAVORS.has(flavor)) {
-    console.error('Usage: node scripts/build-android-flavor.js <user|listener>');
+    console.error('Usage: node scripts/build-android-flavor.js <user|listener> [apk|bundle]');
+    process.exit(1);
+  }
+
+  if (!SUPPORTED_MODES.has(mode)) {
+    console.error('Usage: node scripts/build-android-flavor.js <user|listener> [apk|bundle]');
     process.exit(1);
   }
 
@@ -46,17 +54,33 @@ const run = async () => {
     process.exit(1);
   }
 
-  const gradleTask = flavor === 'listener' ? 'assembleListenerRelease' : 'assembleUserRelease';
-  const apkOutputPath = path.join(
-    androidDir,
-    'app',
-    'build',
-    'outputs',
-    'apk',
-    flavor,
-    'release',
-    `clarivoice-${flavor}.apk`,
-  );
+  const releaseVariantName = `${flavor}Release`;
+  const gradleTask =
+    mode === 'bundle'
+      ? `createBundle${flavor === 'listener' ? 'Listener' : 'User'}ReleaseJsAndAssets`
+      : `assemble${flavor === 'listener' ? 'Listener' : 'User'}Release`;
+  const outputPath =
+    mode === 'bundle'
+      ? path.join(
+          androidDir,
+          'app',
+          'build',
+          'generated',
+          'assets',
+          'react',
+          releaseVariantName,
+          'index.android.bundle',
+        )
+      : path.join(
+          androidDir,
+          'app',
+          'build',
+          'outputs',
+          'apk',
+          flavor,
+          'release',
+          `clarivoice-${flavor}.apk`,
+        );
   const gradleCommand = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
   const envFromFile = parseEnvFile(envFilePath);
 
@@ -86,7 +110,7 @@ const run = async () => {
     }
 
     console.log('');
-    console.log(`Build complete: ${apkOutputPath}`);
+    console.log(`${mode === 'bundle' ? 'Bundle' : 'Build'} complete: ${outputPath}`);
   });
 };
 

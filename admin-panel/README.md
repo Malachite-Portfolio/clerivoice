@@ -24,8 +24,8 @@ Set values in `.env.local`:
 - `NEXT_PUBLIC_SOCKET_URL=http://localhost:8080`
 
 For production builds, create `.env.production`:
-- `NEXT_PUBLIC_API_BASE_URL=https://your-backend.up.railway.app/api/v1`
-- `NEXT_PUBLIC_SOCKET_URL=https://your-backend.up.railway.app`
+- `NEXT_PUBLIC_API_BASE_URL=https://clarivoice-api-1032786255556.asia-south1.run.app/api/v1`
+- `NEXT_PUBLIC_SOCKET_URL=https://clarivoice-api-1032786255556.asia-south1.run.app`
 
 3. Start dev server:
 ```bash
@@ -37,11 +37,11 @@ npm run dev
 1. Open Vercel Dashboard -> your `admin-panel` project.
 2. Go to **Settings -> Environment Variables**.
 3. Add:
-   - `NEXT_PUBLIC_API_BASE_URL=https://your-backend.up.railway.app/api/v1`
-   - `NEXT_PUBLIC_SOCKET_URL=https://your-backend.up.railway.app`
+   - `NEXT_PUBLIC_API_BASE_URL=https://clarivoice-api-1032786255556.asia-south1.run.app/api/v1`
+   - `NEXT_PUBLIC_SOCKET_URL=https://clarivoice-api-1032786255556.asia-south1.run.app`
 4. Save and redeploy the project.
 
-If your Railway URL changes, update both variables and redeploy.
+If your Cloud Run URL changes, update both variables and redeploy.
 
 ## Required Backend Endpoints
 - `POST /admin/auth/login`
