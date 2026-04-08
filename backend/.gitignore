@@ -12,3 +12,10 @@ temp/
 uploads/
 coverage/
 .DS_Store
+.codex-logs/
+
+# Keep deployment-critical files tracked
+!prisma/migrations/
+!prisma/migrations/**
+!package.json
+!package-lock.json
