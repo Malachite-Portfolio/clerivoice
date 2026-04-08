@@ -3,5 +3,12 @@ node_modules/
 .env.*
 dist/
 build/
-coverage/
 *.log
+*.zip
+*.tar
+*.gz
+tmp/
+temp/
+uploads/
+coverage/
+.DS_Store

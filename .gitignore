@@ -49,3 +49,13 @@ yarn-error.*
 
 # generated native folders
 /ios
+
+# repository cleanup artifacts
+*.log
+*.zip
+*.tar
+*.gz
+_backend_deploy_staging/
+backend_clean/
+clarivoice-backend-cloudrun.zip
+backend.zip

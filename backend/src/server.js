@@ -37,7 +37,7 @@ const startRedisWarmup = async () => {
 };
 
 const startServer = async () => {
-  const PORT = Number(process.env.PORT || env.PORT || 8080);
+  const PORT = Number(process.env.PORT || 8080);
   const HOST = '0.0.0.0';
 
   if (!Number.isFinite(PORT) || PORT <= 0) {
