@@ -62,11 +62,17 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value.toLowerCase() === 'true'),
 
-  PAYMENT_PROVIDER: z.enum(['mock', 'razorpay', 'stripe']).default('mock'),
+  PAYMENT_PROVIDER: z.string().default(''),
   PAYMENT_WEBHOOK_SECRET: z.string().default('webhook-secret'),
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(),
+  FIREBASE_PROJECT_ID: z.string().default(''),
+  FIREBASE_CLIENT_EMAIL: z.string().default(''),
+  FIREBASE_PRIVATE_KEY: z
+    .string()
+    .default('')
+    .transform((value) => String(value || '').replace(/\\n/g, '\n')),
   AGORA_APP_ID: z.string().default(''),
   AGORA_APP_CERTIFICATE: z.string().default(''),
   AGORA_TOKEN_EXPIRE_SECONDS: z.coerce.number().int().min(60).default(3600),
@@ -95,6 +101,13 @@ const parsed = envSchema.safeParse({
   TEST_LISTENER_NUMBERS:
     process.env.TEST_LISTENER_NUMBERS || process.env.TEST_LISTENER_PHONES || '',
   AGORA_TOKEN_EXPIRE_SECONDS: tokenExpireSecondsFromEnv,
+  PAYMENT_PROVIDER: String(process.env.PAYMENT_PROVIDER || '').trim().toLowerCase(),
+  RAZORPAY_KEY_ID: String(
+    process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY || ''
+  ).trim(),
+  RAZORPAY_KEY_SECRET: String(
+    process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET || ''
+  ).trim(),
 });
 
 if (!parsed.success) {
@@ -135,22 +148,6 @@ if (env.NODE_ENV === 'production') {
 
   if (env.PAYMENT_PROVIDER === 'mock') {
     throw new Error('PAYMENT_PROVIDER=mock is not allowed in production.');
-  }
-
-  if (
-    env.PAYMENT_PROVIDER === 'razorpay' &&
-    (!String(env.RAZORPAY_KEY_ID || '').trim() || !String(env.RAZORPAY_KEY_SECRET || '').trim())
-  ) {
-    throw new Error(
-      'Missing Razorpay configuration in production. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.'
-    );
-  }
-
-  if (
-    env.PAYMENT_PROVIDER === 'stripe' &&
-    !String(env.STRIPE_SECRET_KEY || '').trim()
-  ) {
-    throw new Error('Missing Stripe configuration in production. Set STRIPE_SECRET_KEY.');
   }
 }
 

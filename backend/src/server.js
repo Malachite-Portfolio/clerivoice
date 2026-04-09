@@ -70,6 +70,7 @@ const startServer = async () => {
   });
 
   httpServer.listen(PORT, HOST, () => {
+    console.log('Server started on port', PORT);
     logger.info('Server listening', {
       host: HOST,
       port: PORT,

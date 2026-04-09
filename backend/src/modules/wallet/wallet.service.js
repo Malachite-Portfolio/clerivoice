@@ -8,6 +8,16 @@ const withdrawalService = require('../withdrawal/withdrawal.service');
 
 const toNumber = (value) => Number(value || 0);
 
+const assertPaymentProviderConfigured = (provider) => {
+  if (provider?.isNoop) {
+    throw new AppError(
+      'Payment provider not configured',
+      503,
+      'PAYMENT_PROVIDER_NOT_CONFIGURED'
+    );
+  }
+};
+
 const evaluateCoupon = async ({ couponCode, amount }) => {
   if (!couponCode) {
     return {
@@ -149,6 +159,7 @@ const createOrder = async ({ userId, planId, amount, couponCode, paymentMethod, 
   });
 
   const provider = getPaymentProvider();
+  assertPaymentProviderConfigured(provider);
 
   const order = await prisma.paymentOrder.create({
     data: {
@@ -226,6 +237,7 @@ const verifyPayment = async ({
   }
 
   const provider = getPaymentProvider();
+  assertPaymentProviderConfigured(provider);
 
   const verificationResult = await provider.verifyPayment({
     order,

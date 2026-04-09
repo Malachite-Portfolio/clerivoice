@@ -1,7 +1,38 @@
 const { env } = require('../../config/env');
+const { logger } = require('../../config/logger');
 const { MockPaymentProvider } = require('./providers/mock.provider');
+const { NoopPaymentProvider } = require('./providers/noop.provider');
 const { RazorpayProvider } = require('./providers/razorpay.provider');
 const { StripeProvider } = require('./providers/stripe.provider');
+
+let hasLoggedDisabledMode = false;
+
+const hasValue = (value) => String(value || '').trim().length > 0;
+const hasRazorpayConfig = () => hasValue(env.RAZORPAY_KEY_ID) && hasValue(env.RAZORPAY_KEY_SECRET);
+const hasStripeConfig = () => hasValue(env.STRIPE_SECRET_KEY);
+
+const logDisabledModeOnce = ({ provider, reason }) => {
+  if (hasLoggedDisabledMode) {
+    return;
+  }
+
+  logger.warn('Payment provider not configured. Running in payout-disabled mode.', {
+    provider: provider || 'none',
+    reason,
+  });
+  logger.warn('\u26A0\uFE0F Payment provider disabled \u2014 manual payout mode active');
+  hasLoggedDisabledMode = true;
+};
+
+const getNoopProvider = ({ provider, reason }) => {
+  if (env.NODE_ENV === 'production') {
+    logDisabledModeOnce({ provider, reason });
+  }
+
+  return new NoopPaymentProvider({
+    configuredProvider: provider || 'razorpay',
+  });
+};
 
 const getPaymentProvider = () => {
   const provider = String(env.PAYMENT_PROVIDER || '').trim().toLowerCase();
@@ -15,7 +46,14 @@ const getPaymentProvider = () => {
   }
 
   if (provider === 'razorpay') {
-    if (!String(env.RAZORPAY_KEY_ID || '').trim() || !String(env.RAZORPAY_KEY_SECRET || '').trim()) {
+    if (!hasRazorpayConfig()) {
+      if (isProduction) {
+        return getNoopProvider({
+          provider: 'razorpay',
+          reason: 'RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET missing',
+        });
+      }
+
       throw new Error('Razorpay configuration is missing. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.');
     }
 
@@ -26,7 +64,14 @@ const getPaymentProvider = () => {
   }
 
   if (provider === 'stripe') {
-    if (!String(env.STRIPE_SECRET_KEY || '').trim()) {
+    if (!hasStripeConfig()) {
+      if (isProduction) {
+        return getNoopProvider({
+          provider: 'stripe',
+          reason: 'STRIPE_SECRET_KEY missing',
+        });
+      }
+
       throw new Error('Stripe configuration is missing. Set STRIPE_SECRET_KEY.');
     }
 
@@ -35,11 +80,26 @@ const getPaymentProvider = () => {
     });
   }
 
+  if (!provider) {
+    if (isProduction) {
+      return getNoopProvider({
+        provider: '',
+        reason: 'PAYMENT_PROVIDER not configured',
+      });
+    }
+
+    return new MockPaymentProvider();
+  }
+
   if (isProduction) {
-    throw new Error(`Unsupported PAYMENT_PROVIDER "${provider}" in production.`);
+    return getNoopProvider({
+      provider,
+      reason: `Unsupported PAYMENT_PROVIDER "${provider}"`,
+    });
   }
 
   return new MockPaymentProvider();
 };
 
 module.exports = { getPaymentProvider };
+
