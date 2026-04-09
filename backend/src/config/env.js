@@ -117,6 +117,14 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+const getHostFromUrl = (value) => {
+  try {
+    return new URL(String(value || '')).hostname.toLowerCase();
+  } catch (_error) {
+    return '';
+  }
+};
+
 if (env.NODE_ENV === 'production') {
   const allowedOrigins = String(env.CLIENT_ORIGIN || '')
     .split(',')
@@ -135,6 +143,18 @@ if (env.NODE_ENV === 'production') {
 
   if (hasLocalOrigin) {
     throw new Error('CLIENT_ORIGIN must not include localhost or 127.0.0.1 in production.');
+  }
+
+  const databaseHost = getHostFromUrl(env.DATABASE_URL);
+  const redisHost = getHostFromUrl(env.REDIS_URL);
+  const hasLocalDataService =
+    ['localhost', '127.0.0.1'].includes(databaseHost) ||
+    ['localhost', '127.0.0.1'].includes(redisHost);
+
+  if (hasLocalDataService) {
+    throw new Error(
+      'DATABASE_URL and REDIS_URL must not point to localhost/127.0.0.1 in production.'
+    );
   }
 
   if (

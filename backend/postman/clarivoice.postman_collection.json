@@ -5,7 +5,7 @@
     "description": "Sample API collection for Clarivoice production-style backend"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8080/api/v1" },
+    { "key": "baseUrl", "value": "https://clarivoice-api-1032786255556.asia-south1.run.app/api/v1" },
     { "key": "accessToken", "value": "" },
     { "key": "refreshToken", "value": "" },
     { "key": "chatSessionId", "value": "" },

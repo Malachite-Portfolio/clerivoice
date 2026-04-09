@@ -3,6 +3,7 @@ import {
   ChartArea,
   CircleDollarSign,
   Headset,
+  Landmark,
   LayoutDashboard,
   LogOut,
   Settings,
@@ -43,6 +44,12 @@ export const SIDEBAR_NAV_ITEMS: NavItem[] = [
     label: "Wallet",
     href: "/wallet",
     icon: Wallet,
+    roles: ["super_admin", "admin"],
+  },
+  {
+    label: "Withdrawals",
+    href: "/withdrawals",
+    icon: Landmark,
     roles: ["super_admin", "admin"],
   },
   {

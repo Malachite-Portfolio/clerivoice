@@ -1,21 +1,10 @@
-FROM node:20-bookworm-slim
+FROM node:20-slim
 
 WORKDIR /app
 
-ENV NODE_ENV=production
-ENV PORT=8080
-
-# Install dependencies first for better layer caching.
 COPY package*.json ./
-
-# Copy Prisma schema before generating client.
-COPY prisma ./prisma
 RUN npm ci --omit=dev
+COPY . .
 RUN npx prisma generate
-
-# Copy application source.
-COPY src ./src
-
-EXPOSE 8080
-
+ENV NODE_ENV=production
 CMD ["npm", "start"]

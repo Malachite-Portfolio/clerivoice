@@ -2,6 +2,8 @@ import { cn } from "@/utils/classnames";
 
 type StatusType =
   | "pending"
+  | "approved"
+  | "payment_done"
   | "verified"
   | "rejected"
   | "active"
@@ -24,6 +26,8 @@ type StatusType =
 
 const STATUS_STYLES: Record<StatusType, string> = {
   pending: "bg-amber-500/20 text-amber-300 border-amber-400/30",
+  approved: "bg-cyan-500/20 text-cyan-300 border-cyan-400/30",
+  payment_done: "bg-emerald-500/20 text-emerald-300 border-emerald-400/30",
   verified: "bg-emerald-500/20 text-emerald-300 border-emerald-400/30",
   rejected: "bg-rose-500/20 text-rose-300 border-rose-400/30",
   active: "bg-emerald-500/20 text-emerald-300 border-emerald-400/30",
@@ -61,7 +65,7 @@ export function StatusBadge({
         className,
       )}
     >
-      {status.replace("_", " ")}
+      {status.replaceAll("_", " ")}
     </span>
   );
 }

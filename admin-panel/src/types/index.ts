@@ -218,6 +218,75 @@ export type WalletTransaction = {
   createdAt: string;
 };
 
+export type WithdrawalStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "IN_PROGRESS"
+  | "PAYMENT_DONE";
+
+export type WithdrawalSummaryCounts = {
+  pending: number;
+  approved: number;
+  inProgress: number;
+  paymentDone: number;
+  rejected: number;
+};
+
+export type AdminWithdrawal = {
+  id: string;
+  listenerId: string;
+  amount: number;
+  status: WithdrawalStatus;
+  bankName: string;
+  accountHolderName: string;
+  accountNumberLast4: string;
+  ifscCode: string;
+  requestedAt: string;
+  approvedAt?: string | null;
+  processingAt?: string | null;
+  paidAt?: string | null;
+  rejectedAt?: string | null;
+  adminNote?: string | null;
+  transactionReference?: string | null;
+  approvedByAdminId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  listener?: {
+    id: string;
+    displayName: string;
+    phone: string;
+  };
+  approvedByAdmin?: {
+    id: string;
+    displayName: string;
+    phone: string;
+  };
+};
+
+export type AdminWithdrawalListResponse = {
+  items: AdminWithdrawal[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+export type UpdateWithdrawalStatusPayload = {
+  status: Exclude<WithdrawalStatus, "PENDING">;
+  adminNote?: string;
+  transactionReference?: string;
+};
+
+export type WithdrawalStatusUpdateResult = {
+  request: AdminWithdrawal;
+  wallet: {
+    availableBalance: number;
+    lockedWithdrawalBalance: number;
+    currency: string;
+  };
+};
+
 export type ReferralRecord = {
   id: string;
   referralCode: string;

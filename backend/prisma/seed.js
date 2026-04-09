@@ -3,8 +3,27 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
+const requireSeedEnv = (name) => {
+  const value = String(process.env[name] || '').trim();
+  if (!value) {
+    throw new Error(`[seed] Missing required environment variable: ${name}`);
+  }
+  return value;
+};
+
+const getSeedEnv = (name, fallback = '') => {
+  const value = String(process.env[name] || '').trim();
+  return value || fallback;
+};
+
 async function main() {
-  const passwordHash = await bcrypt.hash('Admin@123', 10);
+  const adminPhone = requireSeedEnv('ADMIN_PHONE');
+  const adminPassword = requireSeedEnv('ADMIN_PASSWORD');
+  const adminEmail = getSeedEnv('ADMIN_EMAIL');
+  const adminDisplayName = getSeedEnv('ADMIN_DISPLAY_NAME', 'Clarivoice Admin');
+
+  const adminPasswordHash = await bcrypt.hash(adminPassword, 10);
+  const seedUserPasswordHash = await bcrypt.hash(getSeedEnv('SEED_USER_PASSWORD', 'Admin@123'), 10);
   const seededUsers = [
     {
       phone: '+910000000201',
@@ -142,25 +161,40 @@ async function main() {
     },
   ];
 
-  const admin = await prisma.user.upsert({
-    where: { phone: '+910000000001' },
-    update: {
-      role: 'ADMIN',
-      status: 'ACTIVE',
-      passwordHash,
-      email: 'admin25',
-      displayName: 'Clarivoice Admin',
-    },
-    create: {
-      phone: '+910000000001',
-      email: 'admin25',
-      role: 'ADMIN',
-      status: 'ACTIVE',
-      passwordHash,
-      displayName: 'Clarivoice Admin',
-      isPhoneVerified: true,
+  const existingAdmin = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: adminPhone },
+        ...(adminEmail ? [{ email: adminEmail }] : []),
+      ],
     },
   });
+
+  const admin = existingAdmin
+    ? await prisma.user.update({
+        where: { id: existingAdmin.id },
+        data: {
+          phone: adminPhone,
+          email: adminEmail || null,
+          role: 'ADMIN',
+          status: 'ACTIVE',
+          passwordHash: adminPasswordHash,
+          displayName: adminDisplayName,
+          isPhoneVerified: true,
+          deletedAt: null,
+        },
+      })
+    : await prisma.user.create({
+        data: {
+          phone: adminPhone,
+          email: adminEmail || null,
+          role: 'ADMIN',
+          status: 'ACTIVE',
+          passwordHash: adminPasswordHash,
+          displayName: adminDisplayName,
+          isPhoneVerified: true,
+        },
+      });
 
   const listenerUsers = [];
   for (const listenerSeed of seededListeners) {
@@ -169,7 +203,7 @@ async function main() {
       update: {
         role: 'LISTENER',
         status: 'ACTIVE',
-        passwordHash,
+        passwordHash: seedUserPasswordHash,
         displayName: listenerSeed.displayName,
         isPhoneVerified: true,
       },
@@ -177,7 +211,7 @@ async function main() {
         phone: listenerSeed.phone,
         role: 'LISTENER',
         status: 'ACTIVE',
-        passwordHash,
+        passwordHash: seedUserPasswordHash,
         displayName: listenerSeed.displayName,
         isPhoneVerified: true,
       },

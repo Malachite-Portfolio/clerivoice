@@ -20,8 +20,8 @@ npm install
 cp .env.example .env.local
 ```
 Set values in `.env.local`:
-- `NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api/v1`
-- `NEXT_PUBLIC_SOCKET_URL=http://localhost:8080`
+- `NEXT_PUBLIC_API_BASE_URL=https://clarivoice-api-1032786255556.asia-south1.run.app/api/v1`
+- `NEXT_PUBLIC_SOCKET_URL=https://clarivoice-api-1032786255556.asia-south1.run.app`
 
 For production builds, create `.env.production`:
 - `NEXT_PUBLIC_API_BASE_URL=https://clarivoice-api-1032786255556.asia-south1.run.app/api/v1`

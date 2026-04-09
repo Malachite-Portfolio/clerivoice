@@ -73,26 +73,42 @@ function logAuthError(
 }
 
 function normalizeRole(value?: string): AdminRole {
-  const normalized = String(value ?? "admin").toLowerCase();
+  const normalized = String(value ?? "").trim().toLowerCase();
   if (normalized === "super_admin" || normalized === "superadmin") {
     return "super_admin";
   }
   if (normalized === "support_manager" || normalized === "supportmanager") {
     return "support_manager";
   }
-  return "admin";
+  if (normalized === "admin") {
+    return "admin";
+  }
+
+  throw new Error("Invalid admin role returned by backend.");
 }
 
 function mapSessionResponse(rawData: Record<string, unknown>, fallbackLoginId: string): AuthSession {
   const user = (rawData.user as Record<string, unknown> | undefined) ?? rawData;
+  const accessToken = String(rawData.accessToken ?? rawData.token ?? "").trim();
+  const refreshToken = String(rawData.refreshToken ?? "").trim();
+  const role = normalizeRole(String(rawData.role ?? user.role ?? ""));
+  const adminId = String(user.id ?? rawData.adminId ?? "").trim();
+  const name = String(
+    user.displayName ?? user.name ?? user.email ?? user.phone ?? fallbackLoginId,
+  ).trim();
+  const email = String(user.email ?? user.phone ?? fallbackLoginId).trim();
+
+  if (!accessToken || !refreshToken || !adminId) {
+    throw new Error("Invalid authentication response from backend.");
+  }
 
   return {
-    accessToken: String(rawData.accessToken ?? rawData.token ?? ""),
-    refreshToken: String(rawData.refreshToken ?? ""),
-    role: normalizeRole(String(rawData.role ?? user.role ?? "admin")),
-    adminId: String(user.id ?? rawData.adminId ?? "admin-local"),
-    name: String(user.displayName ?? user.name ?? "Admin"),
-    email: String(user.email ?? fallbackLoginId),
+    accessToken,
+    refreshToken,
+    role,
+    adminId,
+    name,
+    email,
   };
 }
 
@@ -134,11 +150,18 @@ export const authService = {
       );
       logAuthResponse("me", response);
       const user = response.data.data;
+      const id = String(user.id ?? "").trim();
+      const role = normalizeRole(String(user.role ?? ""));
+
+      if (!id) {
+        throw new Error("Invalid admin profile response from backend.");
+      }
+
       return {
-        id: String(user.id ?? ""),
-        name: String(user.displayName ?? user.name ?? "Admin"),
-        email: String(user.email ?? ""),
-        role: normalizeRole(String(user.role ?? "admin")),
+        id,
+        name: String(user.displayName ?? user.name ?? user.email ?? user.phone ?? id).trim(),
+        email: String(user.email ?? user.phone ?? "").trim(),
+        role,
       };
     } catch (error) {
       logAuthError("me", API_ENDPOINTS.auth.me, undefined, error);

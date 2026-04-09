@@ -31,13 +31,14 @@ const buildSocketBaseUrl = (rawSocketUrl?: string, apiBaseUrl?: string) => {
   return apiBaseUrl.replace(/\/api(?:\/v\d+)?$/i, "");
 };
 
-export const API_BASE_URL = normalizeApiBaseUrl(
-  process.env.NEXT_PUBLIC_API_BASE_URL,
-);
+const RAW_API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL;
+
+export const API_BASE_URL = normalizeApiBaseUrl(RAW_API_BASE_URL);
 
 export const API_CONFIG_ERROR = API_BASE_URL
   ? ""
-  : "Admin API is not configured. Set NEXT_PUBLIC_API_BASE_URL in environment variables.";
+  : "Admin API is not configured. Set NEXT_PUBLIC_API_BASE_URL (or NEXT_PUBLIC_API_URL) in environment variables.";
 
 export const SOCKET_BASE_URL = buildSocketBaseUrl(
   process.env.NEXT_PUBLIC_SOCKET_URL,
@@ -101,5 +102,15 @@ export const API_ENDPOINTS = {
     overview: "/admin/wallet/overview",
     transactions: "/admin/wallet/transactions",
     manualAdjustment: "/admin/wallet/manual-adjustment",
+  },
+  withdrawals: {
+    list: "/admin/withdrawals",
+    byId: (withdrawalId: string) => `/admin/withdrawals/${withdrawalId}`,
+    updateStatus: (withdrawalId: string) =>
+      `/admin/withdrawal/${withdrawalId}/status`,
+    updateNote: (withdrawalId: string) =>
+      `/admin/withdrawal/${withdrawalId}/note`,
+    updateReference: (withdrawalId: string) =>
+      `/admin/withdrawal/${withdrawalId}/reference`,
   },
 } as const;

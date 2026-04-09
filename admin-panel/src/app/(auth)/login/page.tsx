@@ -14,12 +14,7 @@ export default function LoginPage() {
     register,
     handleSubmit,
     formState: { errors },
-  } = useForm<LoginPayload>({
-    defaultValues: {
-      emailOrPhone: "",
-      password: "",
-    },
-  });
+  } = useForm<LoginPayload>();
 
   const onSubmit = async (values: LoginPayload) => {
     try {
@@ -52,7 +47,7 @@ export default function LoginPage() {
                   required: "Email or phone is required",
                 })}
                 className="pl-9"
-                placeholder="admin@example.com"
+                placeholder="Enter email or phone"
               />
             </div>
             {errors.emailOrPhone ? (
@@ -68,7 +63,7 @@ export default function LoginPage() {
                 type="password"
                 {...register("password", { required: "Password is required" })}
                 className="pl-9"
-                placeholder="••••••••"
+                placeholder="Enter password"
               />
             </div>
             {errors.password ? (
@@ -88,3 +83,4 @@ export default function LoginPage() {
     </div>
   );
 }
+
