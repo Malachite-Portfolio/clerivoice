@@ -1,69 +1,42 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import {
-  mockDashboardSummary,
-  mockLiveSessions,
-  mockRevenueSeries,
-  mockTopHosts,
-  mockWalletTransactions,
-} from "@/constants/mock-data";
 import { dashboardService } from "@/services/dashboard.service";
 
 export function useDashboardData() {
   const summary = useQuery({
     queryKey: ["dashboard-summary"],
-    queryFn: async () => {
-      try {
-        return await dashboardService.summary();
-      } catch {
-        return mockDashboardSummary;
-      }
-    },
+    queryFn: () => dashboardService.summary(),
+    staleTime: 30_000,
+    retry: 1,
   });
 
   const revenueSeries = useQuery({
     queryKey: ["dashboard-revenue-series"],
-    queryFn: async () => {
-      try {
-        return await dashboardService.revenueSeries();
-      } catch {
-        return mockRevenueSeries;
-      }
-    },
+    queryFn: () => dashboardService.revenueSeries(),
+    staleTime: 30_000,
+    retry: 1,
   });
 
   const topHosts = useQuery({
     queryKey: ["dashboard-top-hosts"],
-    queryFn: async () => {
-      try {
-        return await dashboardService.topEarningHosts();
-      } catch {
-        return mockTopHosts;
-      }
-    },
+    queryFn: () => dashboardService.topEarningHosts(),
+    staleTime: 30_000,
+    retry: 1,
   });
 
   const recentSessions = useQuery({
     queryKey: ["dashboard-recent-sessions"],
-    queryFn: async () => {
-      try {
-        return await dashboardService.recentSessions();
-      } catch {
-        return mockLiveSessions;
-      }
-    },
+    queryFn: () => dashboardService.recentSessions(),
+    staleTime: 30_000,
+    retry: 1,
   });
 
   const recentRecharges = useQuery({
     queryKey: ["dashboard-recent-recharges"],
-    queryFn: async () => {
-      try {
-        return await dashboardService.recentRecharges();
-      } catch {
-        return mockWalletTransactions;
-      }
-    },
+    queryFn: () => dashboardService.recentRecharges(),
+    staleTime: 30_000,
+    retry: 1,
   });
 
   return {

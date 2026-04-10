@@ -5,6 +5,15 @@ import { Card, CardTitle } from "@/components/ui/card";
 import type { TopEarningHost } from "@/types";
 
 export function TopHostsBarChart({ data }: { data: TopEarningHost[] }) {
+  if (!data.length) {
+    return (
+      <Card className="h-[320px] p-4">
+        <CardTitle className="mb-4 text-base">Top Earning Hosts</CardTitle>
+        <p className="text-sm text-app-text-secondary">No host earnings data available yet.</p>
+      </Card>
+    );
+  }
+
   return (
     <Card className="h-[320px] p-4">
       <CardTitle className="mb-4 text-base">Top Earning Hosts</CardTitle>

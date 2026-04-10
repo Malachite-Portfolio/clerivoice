@@ -2,19 +2,13 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { mockWalletOverview, mockWalletTransactions } from "@/constants/mock-data";
 import { walletService } from "@/services/wallet.service";
 
 export function useWalletOverview() {
   return useQuery({
     queryKey: ["admin-wallet-overview"],
-    queryFn: async () => {
-      try {
-        return await walletService.getOverview();
-      } catch {
-        return mockWalletOverview;
-      }
-    },
+    queryFn: () => walletService.getOverview(),
+    retry: 1,
   });
 }
 
@@ -27,19 +21,8 @@ export function useWalletTransactions(params: {
 }) {
   return useQuery({
     queryKey: ["admin-wallet-transactions", params],
-    queryFn: async () => {
-      try {
-        return await walletService.getTransactions(params);
-      } catch {
-        return {
-          items: mockWalletTransactions,
-          page: params.page ?? 1,
-          pageSize: params.pageSize ?? 10,
-          totalCount: mockWalletTransactions.length,
-          totalPages: Math.ceil(mockWalletTransactions.length / (params.pageSize ?? 10)),
-        };
-      }
-    },
+    queryFn: () => walletService.getTransactions(params),
+    retry: 1,
   });
 }
 

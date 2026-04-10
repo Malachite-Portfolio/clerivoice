@@ -36,6 +36,7 @@ yarn-error.*
 
 # local env files
 .env
+.env.*
 .env.user
 .env.listener
 .env*.local
@@ -55,6 +56,7 @@ yarn-error.*
 *.zip
 *.tar
 *.gz
+build/
 _backend_deploy_staging/
 backend_clean/
 clarivoice-backend-cloudrun.zip

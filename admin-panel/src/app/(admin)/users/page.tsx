@@ -14,6 +14,17 @@ import type { User } from "@/types";
 import { formatInr } from "@/utils/currency";
 import { formatDate } from "@/utils/date";
 
+const getErrorMessage = (error: unknown) => {
+  const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+  if (message) {
+    return message;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Unable to load users.";
+};
+
 export default function UsersPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -54,7 +65,8 @@ export default function UsersPage() {
           <div>
             <p>{formatInr(row.walletBalance)}</p>
             <p className="text-xs text-app-text-secondary">
-              Recharged: {formatInr(row.totalRecharge)}
+              Recharged:{" "}
+              {typeof row.totalRecharge === "number" ? formatInr(row.totalRecharge) : "--"}
             </p>
           </div>
         ),
@@ -62,12 +74,14 @@ export default function UsersPage() {
       {
         key: "spent",
         header: "Spent",
-        render: (row) => <span>{formatInr(row.totalSpent)}</span>,
+        render: (row) => (
+          <span>{typeof row.totalSpent === "number" ? formatInr(row.totalSpent) : "--"}</span>
+        ),
       },
       {
         key: "referral",
         header: "Referral Code",
-        render: (row) => <span>{row.referralCode}</span>,
+        render: (row) => <span>{row.referralCode || "--"}</span>,
       },
       {
         key: "status",
@@ -145,6 +159,17 @@ export default function UsersPage() {
         totalPages={usersQuery.data?.totalPages}
         onPageChange={setPage}
       />
+      {usersQuery.isError ? (
+        <Card className="mt-4 space-y-3 border-app-danger/40">
+          <p className="font-semibold text-app-danger">Failed to load users</p>
+          <p className="text-sm text-app-text-secondary">{getErrorMessage(usersQuery.error)}</p>
+          <div>
+            <Button size="sm" variant="secondary" onClick={() => void usersQuery.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </Card>
+      ) : null}
 
       {adjustOpen ? (
         <Card className="fixed bottom-4 right-4 z-50 w-[340px] space-y-3 rounded-2xl border border-app-border p-4">

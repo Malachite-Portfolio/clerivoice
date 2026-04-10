@@ -2,6 +2,9 @@ const DEMO_USER_ID = 'demo-user-1';
 const DEMO_USER_TOKEN = 'demo-user-token';
 const DEMO_REFRESH_TOKEN = 'demo-user-refresh-token';
 const DEMO_REFERRAL_CODE = 'CLARIDEV';
+const DEMO_MODE_ENABLED =
+  (typeof __DEV__ !== 'undefined' ? __DEV__ : false) &&
+  String(process.env.EXPO_PUBLIC_DEMO_MODE || '').trim().toLowerCase() === 'true';
 
 const toIso = (date = new Date()) => date.toISOString();
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -340,6 +343,11 @@ export const createDemoUserSession = () => ({
 });
 
 export const setDemoSessionActive = (active, session = null) => {
+  if (!DEMO_MODE_ENABLED) {
+    activeDemoSession = null;
+    return;
+  }
+
   if (!active) {
     activeDemoSession = null;
     return;
@@ -349,9 +357,10 @@ export const setDemoSessionActive = (active, session = null) => {
   activeDemoSession = session ? clone(session) : createDemoUserSession();
 };
 
-export const isDemoSessionActive = () => Boolean(activeDemoSession?.isDemoUser);
+export const isDemoSessionActive = () => DEMO_MODE_ENABLED && Boolean(activeDemoSession?.isDemoUser);
 
-export const getDemoSession = () => (activeDemoSession ? clone(activeDemoSession) : null);
+export const getDemoSession = () =>
+  DEMO_MODE_ENABLED && activeDemoSession ? clone(activeDemoSession) : null;
 
 export const getDemoHosts = async ({ page = 1, limit = 20 } = {}) => {
   const state = getState();

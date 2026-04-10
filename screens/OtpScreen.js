@@ -35,6 +35,7 @@ import {
 } from "../services/firebaseAuthErrorMessage";
 
 const OTP_LENGTH = 6;
+const OTP_SESSION_MISSING_PHONE_MESSAGE = "Phone number not found. Please restart login.";
 
 const logOtpDebug = (label, payload) => {
   if (!AUTH_DEBUG_ENABLED) {
@@ -45,7 +46,7 @@ const logOtpDebug = (label, payload) => {
 };
 
 const OtpScreen = ({ navigation, route }) => {
-  const phone = toIndianE164(route?.params?.phone || "+910000000000");
+  const phone = toIndianE164(route?.params?.phone || "");
   const requestedRole = String(route?.params?.role || APP_FLAVOR || "user")
     .trim()
     .toLowerCase();
@@ -120,6 +121,12 @@ const OtpScreen = ({ navigation, route }) => {
   };
 
   const handleVerify = async () => {
+    if (!phone) {
+      setError(OTP_SESSION_MISSING_PHONE_MESSAGE);
+      Alert.alert("OTP Verification Failed", OTP_SESSION_MISSING_PHONE_MESSAGE);
+      return;
+    }
+
     if (!isComplete) {
       setError("Please enter all 6 digits.");
       return;
@@ -250,6 +257,12 @@ const OtpScreen = ({ navigation, route }) => {
   };
 
   const handleResend = async () => {
+    if (!phone) {
+      setError(OTP_SESSION_MISSING_PHONE_MESSAGE);
+      Alert.alert("OTP Resend Failed", OTP_SESSION_MISSING_PHONE_MESSAGE);
+      return;
+    }
+
     try {
       const resendResponse = await sendFirebaseOtp(phone);
       setVerificationId(String(resendResponse?.verificationId || "").trim());

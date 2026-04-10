@@ -185,6 +185,8 @@ model User {
   wallet          Wallet?
   listenerWithdrawals WithdrawalRequest[] @relation("ListenerWithdrawals")
   approvedWithdrawals WithdrawalRequest[] @relation("AdminApprovedWithdrawals")
+  listenerRateHistoryEntries ListenerRateHistory[] @relation("ListenerRateHistoryListener")
+  listenerRateChangesByAdmin ListenerRateHistory[] @relation("ListenerRateHistoryAdmin")
   otpCodes        OtpCode[]
   authSessions    AuthSession[]
   settings        UserSetting?
@@ -250,6 +252,24 @@ model ListenerProfile {
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   @@index([availability, isEnabled])
+}
+
+model ListenerRateHistory {
+  id                   String   @id @default(cuid())
+  listenerId           String
+  changedByAdminId     String?
+  oldCallRatePerMinute Decimal  @db.Decimal(10, 2)
+  newCallRatePerMinute Decimal  @db.Decimal(10, 2)
+  oldChatRatePerMinute Decimal  @db.Decimal(10, 2)
+  newChatRatePerMinute Decimal  @db.Decimal(10, 2)
+  changeReason         String?
+  createdAt            DateTime @default(now())
+
+  listener       User  @relation("ListenerRateHistoryListener", fields: [listenerId], references: [id], onDelete: Restrict)
+  changedByAdmin User? @relation("ListenerRateHistoryAdmin", fields: [changedByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([listenerId, createdAt])
+  @@index([changedByAdminId, createdAt])
 }
 
 model Wallet {

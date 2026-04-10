@@ -2,40 +2,23 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { mockHosts } from "@/constants/mock-data";
 import { hostsService } from "@/services/hosts.service";
 import type { HostAction, HostCreatePayload, HostListQuery } from "@/types";
 
 export function useHosts(query: HostListQuery) {
   return useQuery({
     queryKey: ["admin-hosts", query],
-    queryFn: async () => {
-      try {
-        return await hostsService.getHosts(query);
-      } catch {
-        return {
-          items: mockHosts,
-          page: query.page ?? 1,
-          pageSize: query.pageSize ?? 10,
-          totalCount: mockHosts.length,
-          totalPages: Math.ceil(mockHosts.length / (query.pageSize ?? 10)),
-        };
-      }
-    },
+    queryFn: () => hostsService.getHosts(query),
+    retry: 1,
   });
 }
 
 export function useHost(hostId: string) {
   return useQuery({
     queryKey: ["admin-host", hostId],
-    queryFn: async () => {
-      try {
-        return await hostsService.getHostById(hostId);
-      } catch {
-        return mockHosts.find((host) => host.id === hostId) ?? mockHosts[0];
-      }
-    },
+    queryFn: () => hostsService.getHostById(hostId),
     enabled: Boolean(hostId),
+    retry: 1,
   });
 }
 
@@ -57,7 +40,7 @@ export function useHostAction(hostId: string) {
 
   return useMutation({
     mutationFn: (input: { action: HostAction; payload?: unknown }) =>
-      hostsService.updateHostAction(hostId, input.action, input.payload),
+      hostsService.updateHostAction(hostId, input.action),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-host", hostId] });
       queryClient.invalidateQueries({ queryKey: ["admin-hosts"] });

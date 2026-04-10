@@ -12,6 +12,19 @@ import { useSupportTickets, useUpdateTicket } from "@/features/support/use-suppo
 import type { SupportTicket } from "@/types";
 import { formatDateTime } from "@/utils/date";
 
+const getErrorMessage = (error: unknown) => {
+  const message = (
+    error as { response?: { data?: { message?: string } } }
+  )?.response?.data?.message;
+  if (message) {
+    return message;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Unable to load support tickets.";
+};
+
 export default function SupportPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -129,12 +142,26 @@ export default function SupportPage() {
         onPageChange={setPage}
       />
 
+      {ticketsQuery.isError ? (
+        <div className="rounded-2xl border border-app-danger/40 bg-app-danger/10 p-4">
+          <p className="font-semibold text-app-danger">Failed to load support tickets</p>
+          <p className="mt-1 text-sm text-app-text-secondary">
+            {getErrorMessage(ticketsQuery.error)}
+          </p>
+          <div className="mt-3">
+            <Button size="sm" variant="secondary" onClick={() => void ticketsQuery.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       {activeTicket ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="glass-card w-full max-w-xl rounded-2xl border border-app-border p-5">
             <p className="text-lg font-semibold">{activeTicket.subject}</p>
             <p className="mt-1 text-sm text-app-text-secondary">
-              Ticket {activeTicket.id} • {activeTicket.userName}
+              Ticket {activeTicket.id} - {activeTicket.userName}
             </p>
 
             <div className="mt-3 flex gap-2">

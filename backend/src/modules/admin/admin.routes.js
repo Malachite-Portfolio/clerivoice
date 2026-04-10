@@ -18,6 +18,15 @@ const {
   updateWithdrawalStatusSchema,
   updateWithdrawalAdminNoteSchema,
   updateWithdrawalTransactionReferenceSchema,
+  adminSupportTicketsQuerySchema,
+  supportTicketIdParamsSchema,
+  updateSupportTicketSchema,
+  adminReferralListQuerySchema,
+  adminSessionEndParamsSchema,
+  adminForceEndSessionSchema,
+  createListenerByAdminSchema,
+  listenerPricingHistoryParamsSchema,
+  listenerPricingHistoryQuerySchema,
 } = require('./admin.validator');
 
 const router = express.Router();
@@ -26,6 +35,13 @@ router.use(authMiddleware, allowRoles('ADMIN'));
 
 router.get('/users', validate(adminPaginationSchema, 'query'), controller.listUsers);
 router.get('/listeners', validate(adminPaginationSchema, 'query'), controller.listListeners);
+router.post('/listeners', validate(createListenerByAdminSchema), controller.createListenerByAdmin);
+router.get(
+  '/listeners/:id/pricing-history',
+  validate(listenerPricingHistoryParamsSchema, 'params'),
+  validate(listenerPricingHistoryQuerySchema, 'query'),
+  controller.getListenerPricingHistory
+);
 router.patch('/listeners/:id/rates', validate(updateListenerRatesSchema), controller.updateListenerRates);
 router.patch('/listeners/:id/status', validate(updateListenerStatusSchema), controller.updateListenerStatus);
 router.patch('/listeners/:id/visibility', validate(updateListenerVisibilitySchema), controller.updateListenerVisibility);
@@ -44,6 +60,18 @@ router.patch('/withdrawals/:id/transaction-reference', validate(withdrawalIdPara
 
 router.get('/sessions/chat', validate(adminPaginationSchema, 'query'), controller.listChatSessions);
 router.get('/sessions/call', validate(adminPaginationSchema, 'query'), controller.listCallSessions);
+router.post(
+  '/sessions/:id/end',
+  validate(adminSessionEndParamsSchema, 'params'),
+  validate(adminForceEndSessionSchema),
+  controller.forceEndSession
+);
+router.patch(
+  '/sessions/:id/end',
+  validate(adminSessionEndParamsSchema, 'params'),
+  validate(adminForceEndSessionSchema),
+  controller.forceEndSession
+);
 
 router.get('/recharge-plans', controller.listRechargePlans);
 router.post('/recharge-plans', validate(createRechargePlanSchema), controller.createRechargePlan);
@@ -51,5 +79,20 @@ router.patch('/recharge-plans/:id', validate(updateRechargePlanSchema), controll
 
 router.get('/referral-rule', controller.getReferralRule);
 router.patch('/referral-rule', validate(updateReferralRuleSchema), controller.updateReferralRule);
+router.get('/referrals', validate(adminReferralListQuerySchema, 'query'), controller.listReferrals);
+
+router.get('/support/tickets', validate(adminSupportTicketsQuerySchema, 'query'), controller.listSupportTickets);
+router.patch(
+  '/support/tickets/:id',
+  validate(supportTicketIdParamsSchema, 'params'),
+  validate(updateSupportTicketSchema),
+  controller.updateSupportTicket
+);
+router.put(
+  '/support/tickets/:id',
+  validate(supportTicketIdParamsSchema, 'params'),
+  validate(updateSupportTicketSchema),
+  controller.updateSupportTicket
+);
 
 module.exports = router;

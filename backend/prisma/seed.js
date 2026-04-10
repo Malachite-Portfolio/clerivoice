@@ -1,3 +1,6 @@
+require('dotenv').config();
+
+const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const { PrismaClient } = require('@prisma/client');
 
@@ -16,11 +19,67 @@ const getSeedEnv = (name, fallback = '') => {
   return value || fallback;
 };
 
+const parseBooleanEnv = (name, fallback = false) => {
+  const value = String(process.env[name] || '').trim().toLowerCase();
+  if (!value) {
+    return fallback;
+  }
+  return value === 'true';
+};
+
+const normalizePhone = (phone) => {
+  const input = String(phone || '').replace(/[\s()-]/g, '').trim();
+  const digits = input.replace(/\D/g, '');
+
+  if (!digits) {
+    return '';
+  }
+
+  if (digits.length === 10) {
+    return `+91${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return `+91${digits.slice(1)}`;
+  }
+
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return `+${digits}`;
+  }
+
+  if (input.startsWith('+')) {
+    return `+${digits}`;
+  }
+
+  return input;
+};
+
+const buildPhoneFromEmail = (email) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedEmail) {
+    throw new Error('[seed] Cannot derive admin phone without ADMIN_EMAIL');
+  }
+
+  const hash = crypto.createHash('sha256').update(normalizedEmail).digest('hex');
+  const numericSeed = Number.parseInt(hash.slice(0, 12), 16);
+  const tenDigit = ((numericSeed % 9000000000) + 1000000000).toString();
+
+  return `+91${tenDigit}`;
+};
+
 async function main() {
-  const adminPhone = requireSeedEnv('ADMIN_PHONE');
+  const adminPhone = normalizePhone(getSeedEnv('ADMIN_PHONE'));
   const adminPassword = requireSeedEnv('ADMIN_PASSWORD');
   const adminEmail = getSeedEnv('ADMIN_EMAIL');
   const adminDisplayName = getSeedEnv('ADMIN_DISPLAY_NAME', 'Clarivoice Admin');
+  const seedAdminOnly = getSeedEnv('SEED_ADMIN_ONLY').toLowerCase() === 'true';
+  const disableLegacyDemoAdmins = parseBooleanEnv('ADMIN_DISABLE_LEGACY_DEMO', true);
+
+  if (!adminPhone && !adminEmail) {
+    throw new Error(
+      '[seed] Provide at least one identifier for admin seed: ADMIN_EMAIL or ADMIN_PHONE'
+    );
+  }
 
   const adminPasswordHash = await bcrypt.hash(adminPassword, 10);
   const seedUserPasswordHash = await bcrypt.hash(getSeedEnv('SEED_USER_PASSWORD', 'Admin@123'), 10);
@@ -164,17 +223,20 @@ async function main() {
   const existingAdmin = await prisma.user.findFirst({
     where: {
       OR: [
-        { phone: adminPhone },
+        ...(adminPhone ? [{ phone: adminPhone }] : []),
         ...(adminEmail ? [{ email: adminEmail }] : []),
       ],
     },
   });
 
+  const adminCreatePhone = adminPhone || buildPhoneFromEmail(adminEmail);
+  const adminUpdatePhone = adminPhone || existingAdmin?.phone || adminCreatePhone;
+
   const admin = existingAdmin
     ? await prisma.user.update({
         where: { id: existingAdmin.id },
         data: {
-          phone: adminPhone,
+          phone: adminUpdatePhone,
           email: adminEmail || null,
           role: 'ADMIN',
           status: 'ACTIVE',
@@ -186,7 +248,7 @@ async function main() {
       })
     : await prisma.user.create({
         data: {
-          phone: adminPhone,
+          phone: adminCreatePhone,
           email: adminEmail || null,
           role: 'ADMIN',
           status: 'ACTIVE',
@@ -195,6 +257,30 @@ async function main() {
           isPhoneVerified: true,
         },
       });
+
+  if (disableLegacyDemoAdmins) {
+    const legacyDemoAdminResult = await prisma.user.updateMany({
+      where: {
+        role: 'ADMIN',
+        status: 'ACTIVE',
+        id: { not: admin.id },
+        OR: [{ email: 'admin25' }, { phone: '+910000000001' }],
+      },
+      data: {
+        status: 'BLOCKED',
+        blockedReason: 'Legacy demo admin disabled',
+      },
+    });
+
+    if (legacyDemoAdminResult.count > 0) {
+      console.log(`[seed] Disabled ${legacyDemoAdminResult.count} legacy demo admin account(s).`);
+    }
+  }
+
+  if (seedAdminOnly) {
+    console.log('[seed] Admin-only seeding complete.');
+    return;
+  }
 
   const listenerUsers = [];
   for (const listenerSeed of seededListeners) {

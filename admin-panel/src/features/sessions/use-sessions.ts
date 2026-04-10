@@ -2,20 +2,14 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { mockLiveSessions } from "@/constants/mock-data";
 import { sessionsService } from "@/services/sessions.service";
 
 export function useLiveSessions() {
   return useQuery({
     queryKey: ["admin-live-sessions"],
-    queryFn: async () => {
-      try {
-        return await sessionsService.getLiveSessions();
-      } catch {
-        return mockLiveSessions;
-      }
-    },
+    queryFn: () => sessionsService.getLiveSessions(),
     refetchInterval: 15_000,
+    retry: 1,
   });
 }
 
@@ -29,6 +23,12 @@ export function useForceEndSession() {
       toast.success("Session ended successfully");
       queryClient.invalidateQueries({ queryKey: ["admin-live-sessions"] });
     },
-    onError: () => toast.error("Failed to end session"),
+    onError: (error: unknown) => {
+      const message =
+        (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+        (error instanceof Error ? error.message : "") ||
+        "Failed to end session";
+      toast.error(message);
+    },
   });
 }

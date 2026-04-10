@@ -21,11 +21,23 @@ import type { WalletTransaction } from "@/types";
 import { formatInr } from "@/utils/currency";
 import { formatDateTime } from "@/utils/date";
 
+const getQueryErrorMessage = (error: unknown) => {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return "Unable to load data from backend.";
+};
+
 export default function DashboardPage() {
   const { summary, revenueSeries, topHosts, recentSessions, recentRecharges } =
     useDashboardData();
 
   const summaryData = summary.data;
+  const pendingApprovalsValue =
+    summaryData?.pendingHostApprovals !== null && summaryData?.pendingHostApprovals !== undefined
+      ? String(summaryData.pendingHostApprovals)
+      : "--";
 
   const rechargeColumns: DataColumn<WalletTransaction>[] = [
     {
@@ -56,33 +68,45 @@ export default function DashboardPage() {
       subtitle="Control hosts, monitor revenue, and track active sessions in real-time."
       revenueToday={summaryData?.revenueToday}
     >
+      {summary.isError ? (
+        <Card className="space-y-2 border-app-danger/40">
+          <CardTitle className="text-base text-app-danger">Failed to load dashboard summary</CardTitle>
+          <p className="text-sm text-app-text-secondary">{getQueryErrorMessage(summary.error)}</p>
+          <div>
+            <Button size="sm" variant="secondary" onClick={() => void summary.refetch()}>
+              Retry Summary
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Total Users"
-          value={summaryData ? summaryData.totalUsers.toLocaleString("en-IN") : "--"}
+          value={summary.isLoading ? "Loading..." : summaryData ? summaryData.totalUsers.toLocaleString("en-IN") : "--"}
           icon={<UsersRound className="h-4 w-4" />}
         />
         <StatCard
           label="Total Hosts"
-          value={summaryData ? summaryData.totalHosts.toLocaleString("en-IN") : "--"}
+          value={summary.isLoading ? "Loading..." : summaryData ? summaryData.totalHosts.toLocaleString("en-IN") : "--"}
           subValue={`Active: ${summaryData?.activeHosts ?? "--"}`}
           icon={<Headset className="h-4 w-4" />}
         />
         <StatCard
           label="Live Calls"
-          value={summaryData ? String(summaryData.liveCallsNow) : "--"}
+          value={summary.isLoading ? "Loading..." : summaryData ? String(summaryData.liveCallsNow) : "--"}
           subValue={`Chats: ${summaryData?.liveChatsNow ?? "--"}`}
           icon={<MessageSquareMore className="h-4 w-4" />}
         />
         <StatCard
           label="Revenue Today"
-          value={summaryData ? formatInr(summaryData.revenueToday) : "--"}
+          value={summary.isLoading ? "Loading..." : summaryData ? formatInr(summaryData.revenueToday) : "--"}
           subValue={`Recharge: ${summaryData ? formatInr(summaryData.rechargeToday) : "--"}`}
           icon={<CircleDollarSign className="h-4 w-4" />}
         />
         <StatCard
           label="Pending Host Approvals"
-          value={summaryData ? String(summaryData.pendingHostApprovals) : "--"}
+          value={summary.isLoading ? "Loading..." : pendingApprovalsValue}
           icon={<UserSquare className="h-4 w-4" />}
           className="sm:col-span-2 xl:col-span-1"
         />
@@ -90,10 +114,44 @@ export default function DashboardPage() {
 
       <div className="grid gap-4 xl:grid-cols-5" id="analytics">
         <div className="xl:col-span-3">
-          <RevenueLineChart data={revenueSeries.data ?? []} />
+          {revenueSeries.isError ? (
+            <Card className="h-[320px] space-y-2 border-app-danger/40 p-4">
+              <CardTitle className="text-base text-app-danger">Revenue trend unavailable</CardTitle>
+              <p className="text-sm text-app-text-secondary">{getQueryErrorMessage(revenueSeries.error)}</p>
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => void revenueSeries.refetch()}>
+                  Retry Revenue
+                </Button>
+              </div>
+            </Card>
+          ) : revenueSeries.isLoading ? (
+            <Card className="h-[320px] p-4">
+              <CardTitle className="text-base">Revenue & Recharge Trend</CardTitle>
+              <p className="mt-4 text-sm text-app-text-secondary">Loading chart data...</p>
+            </Card>
+          ) : (
+            <RevenueLineChart data={revenueSeries.data ?? []} />
+          )}
         </div>
         <div className="xl:col-span-2">
-          <TopHostsBarChart data={topHosts.data ?? []} />
+          {topHosts.isError ? (
+            <Card className="h-[320px] space-y-2 border-app-danger/40 p-4">
+              <CardTitle className="text-base text-app-danger">Top hosts unavailable</CardTitle>
+              <p className="text-sm text-app-text-secondary">{getQueryErrorMessage(topHosts.error)}</p>
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => void topHosts.refetch()}>
+                  Retry Top Hosts
+                </Button>
+              </div>
+            </Card>
+          ) : topHosts.isLoading ? (
+            <Card className="h-[320px] p-4">
+              <CardTitle className="text-base">Top Earning Hosts</CardTitle>
+              <p className="mt-4 text-sm text-app-text-secondary">Loading chart data...</p>
+            </Card>
+          ) : (
+            <TopHostsBarChart data={topHosts.data ?? []} />
+          )}
         </div>
       </div>
 
@@ -117,11 +175,31 @@ export default function DashboardPage() {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card className="space-y-3">
-          <CardTitle className="text-base">Recent Sessions</CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-base">Recent Sessions</CardTitle>
+            {recentSessions.isError ? (
+              <Button size="sm" variant="secondary" onClick={() => void recentSessions.refetch()}>
+                Retry
+              </Button>
+            ) : null}
+          </div>
+          {recentSessions.isError ? (
+            <p className="text-sm text-app-danger">{getQueryErrorMessage(recentSessions.error)}</p>
+          ) : null}
           <SessionTable sessions={recentSessions.data ?? []} loading={recentSessions.isLoading} />
         </Card>
         <Card className="space-y-3">
-          <CardTitle className="text-base">Recent Recharges</CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-base">Recent Recharges</CardTitle>
+            {recentRecharges.isError ? (
+              <Button size="sm" variant="secondary" onClick={() => void recentRecharges.refetch()}>
+                Retry
+              </Button>
+            ) : null}
+          </div>
+          {recentRecharges.isError ? (
+            <p className="text-sm text-app-danger">{getQueryErrorMessage(recentRecharges.error)}</p>
+          ) : null}
           <DataTable
             data={recentRecharges.data ?? []}
             loading={recentRecharges.isLoading}
@@ -135,13 +213,13 @@ export default function DashboardPage() {
         <div className="rounded-2xl border border-app-border p-4">
           <p className="text-xs text-app-text-muted">Wallet Recharge Today</p>
           <p className="mt-2 text-2xl font-semibold">
-            {summaryData ? formatInr(summaryData.rechargeToday) : "--"}
+            {summary.isLoading ? "Loading..." : summaryData ? formatInr(summaryData.rechargeToday) : "--"}
           </p>
         </div>
         <div className="rounded-2xl border border-app-border p-4">
           <p className="text-xs text-app-text-muted">Revenue Today</p>
           <p className="mt-2 text-2xl font-semibold">
-            {summaryData ? formatInr(summaryData.revenueToday) : "--"}
+            {summary.isLoading ? "Loading..." : summaryData ? formatInr(summaryData.revenueToday) : "--"}
           </p>
           <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-app-accent-bg px-2 py-1 text-xs text-app-accent">
             <Wallet className="h-3 w-3" />

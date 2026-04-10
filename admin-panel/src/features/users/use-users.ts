@@ -2,7 +2,6 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { mockUsers } from "@/constants/mock-data";
 import { usersService } from "@/services/users.service";
 
 export function useUsers(params: {
@@ -13,19 +12,8 @@ export function useUsers(params: {
 }) {
   return useQuery({
     queryKey: ["admin-users", params],
-    queryFn: async () => {
-      try {
-        return await usersService.getUsers(params);
-      } catch {
-        return {
-          items: mockUsers,
-          page: params.page ?? 1,
-          pageSize: params.pageSize ?? 10,
-          totalCount: mockUsers.length,
-          totalPages: Math.ceil(mockUsers.length / (params.pageSize ?? 10)),
-        };
-      }
-    },
+    queryFn: () => usersService.getUsers(params),
+    retry: 1,
   });
 }
 

@@ -610,7 +610,7 @@ const ListenerHomeScreen = ({ navigation }) => {
               <View style={styles.drawerHeader}>
                 <ProfileAvatar source={listenerAvatarSource} size={58} showOnline online />
                 <Text style={styles.drawerName}>{listenerName}</Text>
-                <Text style={styles.drawerPhone}>{session?.user?.phone || '+91 0000000000'}</Text>
+                <Text style={styles.drawerPhone}>{session?.user?.phone || "Phone not available"}</Text>
               </View>
 
               <DrawerItem

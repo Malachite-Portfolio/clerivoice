@@ -13,14 +13,14 @@ export default function SettingsPage() {
   const settingsQuery = useSettings();
   const updateSettings = useUpdateSettings();
   const [form, setForm] = useState({
-    minimumBalanceCall: "30",
-    minimumBalanceChat: "20",
-    lowBalanceWarningThresholdMinutes: "2",
-    rechargePlans: "159,249,449",
-    inviterReward: "55",
-    invitedReward: "50",
-    qualifyingRechargeAmount: "500",
-    faqContent: "When do I receive reward?|Once invited user completes first verified recharge.",
+    minimumBalanceCall: "",
+    minimumBalanceChat: "",
+    lowBalanceWarningThresholdMinutes: "",
+    rechargePlans: "",
+    inviterReward: "",
+    invitedReward: "",
+    qualifyingRechargeAmount: "",
+    faqContent: "",
   });
 
   useEffect(() => {
@@ -51,6 +51,22 @@ export default function SettingsPage() {
       subtitle="Configure recharge plans, referral rewards, billing limits, and feature toggles."
     >
       <RoleGate roles={["super_admin", "admin"]}>
+      {settingsQuery.isError ? (
+        <Card className="mb-4 space-y-2 border-app-danger/40">
+          <CardTitle className="text-base text-app-danger">Failed to load settings</CardTitle>
+          <p className="text-sm text-app-text-secondary">
+            {(
+              settingsQuery.error as { response?: { data?: { message?: string } } }
+            )?.response?.data?.message || "Unable to load settings from backend."}
+          </p>
+          <div>
+            <Button size="sm" variant="secondary" onClick={() => void settingsQuery.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
       <Card className="space-y-4">
         <div>
           <CardTitle>Billing Controls</CardTitle>

@@ -15,9 +15,27 @@ const listListeners = asyncHandler(async (req, res) => {
 const updateListenerRates = asyncHandler(async (req, res) => {
   const data = await adminService.updateListenerRates({
     listenerId: req.params.id,
+    adminId: req.user.id,
     ...req.body,
   });
   return successResponse(res, data, 'Listener rates updated');
+});
+
+const createListenerByAdmin = asyncHandler(async (req, res) => {
+  const data = await adminService.createListenerByAdmin({
+    adminId: req.user.id,
+    ...req.body,
+  });
+  return successResponse(res, data, 'Listener created successfully', 201);
+});
+
+const getListenerPricingHistory = asyncHandler(async (req, res) => {
+  const data = await adminService.getListenerPricingHistory({
+    listenerId: req.params.id,
+    page: Number(req.query.page || 1),
+    limit: Number(req.query.limit || 20),
+  });
+  return successResponse(res, data);
 });
 
 const updateListenerStatus = asyncHandler(async (req, res) => {
@@ -109,6 +127,16 @@ const listCallSessions = asyncHandler(async (req, res) => {
   return successResponse(res, data);
 });
 
+const forceEndSession = asyncHandler(async (req, res) => {
+  const data = await adminService.forceEndSession({
+    sessionId: req.params.id,
+    adminId: req.user.id,
+    reason: req.body.reason,
+    sessionType: req.body.sessionType,
+  });
+  return successResponse(res, data, 'Session ended successfully');
+});
+
 const manualWalletAdjustment = asyncHandler(async (req, res) => {
   const data = await adminService.manualWalletAdjustment({
     ...req.body,
@@ -145,9 +173,30 @@ const updateReferralRule = asyncHandler(async (req, res) => {
   return successResponse(res, data, 'Referral rule updated');
 });
 
+const listReferrals = asyncHandler(async (req, res) => {
+  const data = await adminService.listReferrals(req.query);
+  return successResponse(res, data);
+});
+
+const listSupportTickets = asyncHandler(async (req, res) => {
+  const data = await adminService.listSupportTickets(req.query);
+  return successResponse(res, data);
+});
+
+const updateSupportTicket = asyncHandler(async (req, res) => {
+  const data = await adminService.updateSupportTicket({
+    ticketId: req.params.id,
+    adminId: req.user.id,
+    ...req.body,
+  });
+  return successResponse(res, data, 'Support ticket updated');
+});
+
 module.exports = {
   listUsers,
   listListeners,
+  createListenerByAdmin,
+  getListenerPricingHistory,
   updateListenerRates,
   updateListenerStatus,
   updateListenerVisibility,
@@ -160,10 +209,14 @@ module.exports = {
   updateWithdrawalTransactionReference,
   listChatSessions,
   listCallSessions,
+  forceEndSession,
   manualWalletAdjustment,
   listRechargePlans,
   createRechargePlan,
   updateRechargePlan,
   getReferralRule,
   updateReferralRule,
+  listReferrals,
+  listSupportTickets,
+  updateSupportTicket,
 };

@@ -25,6 +25,17 @@ import { formatDate } from "@/utils/date";
 
 type HostsViewMode = "list" | "add";
 
+const getErrorMessage = (error: unknown) => {
+  const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+  if (message) {
+    return message;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Unable to load hosts.";
+};
+
 export default function HostsPage() {
   const [view, setView] = useState<HostsViewMode>("list");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -318,6 +329,19 @@ export default function HostsPage() {
               onPageChange={setPage}
               emptyLabel="No hosts found for selected filters."
             />
+            {hostsQuery.isError ? (
+              <Card className="mt-4 space-y-3 border-app-danger/40">
+                <p className="font-semibold text-app-danger">Failed to load hosts</p>
+                <p className="text-sm text-app-text-secondary">
+                  {getErrorMessage(hostsQuery.error)}
+                </p>
+                <div>
+                  <Button size="sm" variant="secondary" onClick={() => void hostsQuery.refetch()}>
+                    Retry
+                  </Button>
+                </div>
+              </Card>
+            ) : null}
           </>
         ) : (
           <Card>

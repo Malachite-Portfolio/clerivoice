@@ -38,24 +38,42 @@ export default function HostDetailsPage() {
   const [pendingAction, setPendingAction] = useState<HostAction | null>(null);
   const [sessionHistory, setSessionHistory] = useState<HostSessionHistoryItem[]>([]);
   const [priceHistory, setPriceHistory] = useState<HostPriceLog[]>([]);
+  const [sessionHistoryLoading, setSessionHistoryLoading] = useState(false);
+  const [sessionHistoryError, setSessionHistoryError] = useState<string | null>(null);
+  const [pricingHistoryLoading, setPricingHistoryLoading] = useState(false);
+  const [pricingHistoryError, setPricingHistoryError] = useState<string | null>(null);
 
   const host = hostQuery.data;
 
   const loadSessionHistory = async () => {
+    setSessionHistoryLoading(true);
+    setSessionHistoryError(null);
     try {
       const result = await hostsService.getHostSessionHistory(hostId);
       setSessionHistory(result);
-    } catch {
+    } catch (error) {
       setSessionHistory([]);
+      setSessionHistoryError(
+        error instanceof Error ? error.message : "Unable to load host session history.",
+      );
+    } finally {
+      setSessionHistoryLoading(false);
     }
   };
 
   const loadPricingLogs = async () => {
+    setPricingHistoryLoading(true);
+    setPricingHistoryError(null);
     try {
       const result = await hostsService.getHostPricingLogs(hostId);
       setPriceHistory(result);
-    } catch {
+    } catch (error) {
       setPriceHistory([]);
+      setPricingHistoryError(
+        error instanceof Error ? error.message : "Unable to load pricing history.",
+      );
+    } finally {
+      setPricingHistoryLoading(false);
     }
   };
 
@@ -271,7 +289,16 @@ export default function HostDetailsPage() {
       {tab === "sessions" ? (
         <Card>
           <CardTitle className="mb-3 text-base">Session History</CardTitle>
-          <DataTable data={sessionHistory} columns={sessionColumns} />
+          {sessionHistoryError ? (
+            <div className="mb-3 rounded-xl border border-app-danger/40 bg-app-danger/10 p-3">
+              <p className="text-sm text-app-danger">{sessionHistoryError}</p>
+            </div>
+          ) : null}
+          <DataTable
+            data={sessionHistory}
+            columns={sessionColumns}
+            loading={sessionHistoryLoading}
+          />
         </Card>
       ) : null}
 
@@ -280,7 +307,16 @@ export default function HostDetailsPage() {
       {tab === "pricing-history" ? (
         <Card>
           <CardTitle className="mb-3 text-base">Pricing History</CardTitle>
-          <DataTable data={priceHistory} columns={pricingColumns} />
+          {pricingHistoryError ? (
+            <div className="mb-3 rounded-xl border border-app-danger/40 bg-app-danger/10 p-3">
+              <p className="text-sm text-app-danger">{pricingHistoryError}</p>
+            </div>
+          ) : null}
+          <DataTable
+            data={priceHistory}
+            columns={pricingColumns}
+            loading={pricingHistoryLoading}
+          />
         </Card>
       ) : null}
 

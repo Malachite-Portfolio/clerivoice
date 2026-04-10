@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AdminLayout } from "@/components/layout/admin-layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
@@ -8,20 +8,37 @@ import { DataTable, type DataColumn } from "@/components/ui/data-table";
 import { Input } from "@/components/ui/input";
 import { SearchFilterBar } from "@/components/ui/search-filter-bar";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { useReferrals, useUpdateReferralSettings } from "@/features/referrals/use-referrals";
+import {
+  useReferrals,
+  useReferralSettings,
+  useUpdateReferralSettings,
+} from "@/features/referrals/use-referrals";
 import type { ReferralRecord } from "@/types";
 import { formatInr } from "@/utils/currency";
 import { formatDateTime } from "@/utils/date";
+
+const getErrorMessage = (error: unknown) => {
+  const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+  if (message) {
+    return message;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Unable to load referral data.";
+};
 
 export default function ReferralsPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [settings, setSettings] = useState({
-    inviterReward: "55",
-    invitedReward: "50",
-    qualifyingRechargeAmount: "500",
+    inviterReward: "",
+    invitedReward: "",
+    qualifyingRechargeAmount: "",
   });
+
+  const referralSettingsQuery = useReferralSettings();
 
   const referralsQuery = useReferrals({
     page,
@@ -31,6 +48,18 @@ export default function ReferralsPage() {
   });
 
   const updateSettings = useUpdateReferralSettings();
+
+  useEffect(() => {
+    if (!referralSettingsQuery.data) {
+      return;
+    }
+
+    setSettings({
+      inviterReward: String(referralSettingsQuery.data.inviterReward),
+      invitedReward: String(referralSettingsQuery.data.invitedReward),
+      qualifyingRechargeAmount: String(referralSettingsQuery.data.qualifyingRechargeAmount),
+    });
+  }, [referralSettingsQuery.data]);
 
   const columns: DataColumn<ReferralRecord>[] = useMemo(
     () => [
@@ -107,6 +136,13 @@ export default function ReferralsPage() {
             placeholder="Qualifying amount"
           />
           <Button
+            disabled={
+              updateSettings.isPending ||
+              referralSettingsQuery.isLoading ||
+              !settings.inviterReward ||
+              !settings.invitedReward ||
+              !settings.qualifyingRechargeAmount
+            }
             onClick={() =>
               updateSettings.mutate({
                 inviterReward: Number(settings.inviterReward),
@@ -118,6 +154,14 @@ export default function ReferralsPage() {
             Save Rules
           </Button>
         </div>
+        {referralSettingsQuery.isLoading ? (
+          <p className="text-sm text-app-text-secondary">Loading referral settings...</p>
+        ) : null}
+        {referralSettingsQuery.isError ? (
+          <p className="text-sm text-app-danger">
+            {getErrorMessage(referralSettingsQuery.error)}
+          </p>
+        ) : null}
       </Card>
 
       <SearchFilterBar
@@ -149,6 +193,17 @@ export default function ReferralsPage() {
         totalPages={referralsQuery.data?.totalPages}
         onPageChange={setPage}
       />
+      {referralsQuery.isError ? (
+        <Card className="space-y-3 border-app-danger/40">
+          <p className="font-semibold text-app-danger">Failed to load referral records</p>
+          <p className="text-sm text-app-text-secondary">{getErrorMessage(referralsQuery.error)}</p>
+          <div>
+            <Button size="sm" variant="secondary" onClick={() => void referralsQuery.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </Card>
+      ) : null}
     </AdminLayout>
   );
 }

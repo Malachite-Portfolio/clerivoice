@@ -6,10 +6,26 @@ import { Button } from "@/components/ui/button";
 import { ConfirmationModal } from "@/components/ui/confirmation-modal";
 import { SessionTable } from "@/components/ui/session-table";
 import { Tabs } from "@/components/ui/tabs";
-import { useForceEndSession, useLiveSessions } from "@/features/sessions/use-sessions";
+import {
+  useForceEndSession,
+  useLiveSessions,
+} from "@/features/sessions/use-sessions";
 import type { LiveSession } from "@/types";
 
 type SessionFilter = "all" | "call" | "chat";
+
+const getErrorMessage = (error: unknown) => {
+  const message = (
+    error as { response?: { data?: { message?: string } } }
+  )?.response?.data?.message;
+  if (message) {
+    return message;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Unable to load sessions.";
+};
 
 export default function SessionsPage() {
   const liveSessionsQuery = useLiveSessions();
@@ -40,6 +56,20 @@ export default function SessionsPage() {
 
       <SessionTable sessions={sessions} loading={liveSessionsQuery.isLoading} />
 
+      {liveSessionsQuery.isError ? (
+        <div className="rounded-2xl border border-app-danger/40 bg-app-danger/10 p-4">
+          <p className="font-semibold text-app-danger">Failed to load live sessions</p>
+          <p className="mt-1 text-sm text-app-text-secondary">
+            {getErrorMessage(liveSessionsQuery.error)}
+          </p>
+          <div className="mt-3">
+            <Button size="sm" variant="secondary" onClick={() => void liveSessionsQuery.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="glass-card rounded-2xl border border-app-border p-4">
         <p className="mb-2 text-sm text-app-text-secondary">Quick Intervention</p>
         <div className="flex flex-wrap gap-2">
@@ -49,8 +79,9 @@ export default function SessionsPage() {
               variant="secondary"
               size="sm"
               onClick={() => setSelected(session)}
+              disabled={forceEnd.isPending}
             >
-              End {session.type} • {session.userName}
+              End {session.type} - {session.userName}
             </Button>
           ))}
         </div>

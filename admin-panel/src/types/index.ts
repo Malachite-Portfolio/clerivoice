@@ -178,10 +178,10 @@ export type User = {
   name: string;
   phone: string;
   email?: string;
-  referralCode: string;
+  referralCode?: string | null;
   walletBalance: number;
-  totalRecharge: number;
-  totalSpent: number;
+  totalRecharge?: number | null;
+  totalSpent?: number | null;
   status: UserAccountStatus;
   joinedAt: string;
 };
@@ -339,7 +339,7 @@ export type DashboardSummary = {
   liveChatsNow: number;
   rechargeToday: number;
   revenueToday: number;
-  pendingHostApprovals: number;
+  pendingHostApprovals: number | null;
 };
 
 export type RevenuePoint = {

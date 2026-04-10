@@ -2,7 +2,6 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { mockSupportTickets } from "@/constants/mock-data";
 import { supportService } from "@/services/support.service";
 
 export function useSupportTickets(params: {
@@ -14,19 +13,8 @@ export function useSupportTickets(params: {
 }) {
   return useQuery({
     queryKey: ["admin-support-tickets", params],
-    queryFn: async () => {
-      try {
-        return await supportService.getTickets(params);
-      } catch {
-        return {
-          items: mockSupportTickets,
-          page: params.page ?? 1,
-          pageSize: params.pageSize ?? 10,
-          totalCount: mockSupportTickets.length,
-          totalPages: Math.ceil(mockSupportTickets.length / (params.pageSize ?? 10)),
-        };
-      }
-    },
+    queryFn: () => supportService.getTickets(params),
+    retry: 1,
   });
 }
 

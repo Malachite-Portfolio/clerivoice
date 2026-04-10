@@ -14,6 +14,15 @@ import { Card, CardTitle } from "@/components/ui/card";
 import type { RevenuePoint } from "@/types";
 
 export function RevenueLineChart({ data }: { data: RevenuePoint[] }) {
+  if (!data.length) {
+    return (
+      <Card className="h-[320px] p-4">
+        <CardTitle className="mb-4 text-base">Revenue & Recharge Trend</CardTitle>
+        <p className="text-sm text-app-text-secondary">No revenue trend data available yet.</p>
+      </Card>
+    );
+  }
+
   return (
     <Card className="h-[320px] p-4">
       <CardTitle className="mb-4 text-base">Revenue & Recharge Trend</CardTitle>

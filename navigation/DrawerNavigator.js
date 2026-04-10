@@ -95,7 +95,7 @@ const CustomDrawerContent = ({ navigation }) => {
               {session?.user?.displayName || 'Anonymous'}
             </Text>
             <Text style={styles.userPhone}>
-              {session?.user?.phone || '+91 0000000000'}
+              {session?.user?.phone || "Phone not available"}
             </Text>
           </View>
 

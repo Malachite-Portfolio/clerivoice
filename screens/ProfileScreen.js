@@ -160,7 +160,7 @@ const ProfileScreen = ({ navigation, route }) => {
       });
   const phoneLabel = showExternalProfile
     ? externalProfile?.phone || 'Private profile'
-    : selfProfile?.phone || session?.user?.phone || '+91 0000000000';
+    : selfProfile?.phone || session?.user?.phone || 'Phone not available';
   const roleLabel = showExternalProfile
     ? String(externalProfile?.role || '').trim().toUpperCase() || null
     : String(selfProfile?.role || session?.user?.role || '').trim().toUpperCase() || null;

@@ -10,10 +10,27 @@ import { SearchFilterBar } from "@/components/ui/search-filter-bar";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useDebounce } from "@/hooks/useDebounce";
-import { useManualWalletAdjustment, useWalletOverview, useWalletTransactions } from "@/features/wallet/use-wallet";
+import {
+  useManualWalletAdjustment,
+  useWalletOverview,
+  useWalletTransactions,
+} from "@/features/wallet/use-wallet";
 import type { WalletTransaction } from "@/types";
 import { formatInr } from "@/utils/currency";
 import { formatDateTime } from "@/utils/date";
+
+const getErrorMessage = (error: unknown) => {
+  const message = (
+    error as { response?: { data?: { message?: string } } }
+  )?.response?.data?.message;
+  if (message) {
+    return message;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Unable to load wallet data.";
+};
 
 export default function WalletPage() {
   const overviewQuery = useWalletOverview();
@@ -73,7 +90,7 @@ export default function WalletPage() {
         header: "Balance Change",
         render: (row) => (
           <span>
-            {formatInr(row.balanceBefore)} → {formatInr(row.balanceAfter)}
+            {formatInr(row.balanceBefore)} {"->"} {formatInr(row.balanceAfter)}
           </span>
         ),
       },
@@ -99,125 +116,181 @@ export default function WalletPage() {
       subtitle="Track recharge flow, payment health, and suspicious transaction patterns."
     >
       <RoleGate roles={["super_admin", "admin"]}>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          label="Recharge Volume"
-          value={overview ? formatInr(overview.totalRechargeVolume) : "--"}
-        />
-        <StatCard
-          label="Pending Payments"
-          value={overview ? String(overview.pendingPayments) : "--"}
-        />
-        <StatCard
-          label="Failed Payments"
-          value={overview ? String(overview.failedPayments) : "--"}
-        />
-        <StatCard
-          label="Refunds"
-          value={overview ? String(overview.refunds) : "--"}
-          subValue={`Coupon Usage: ${overview?.couponUsage ?? "--"}`}
-        />
-      </div>
-
-      <SearchFilterBar
-        searchValue={search}
-        onSearchChange={setSearch}
-        onFilterChange={(key, value) => {
-          if (key === "type") setType(value);
-          if (key === "status") setStatus(value);
-        }}
-        filters={[
-          {
-            key: "type",
-            label: "Type",
-            value: type,
-            options: [
-              { value: "all", label: "All" },
-              { value: "recharge", label: "Recharge" },
-              { value: "call_debit", label: "Call Debit" },
-              { value: "chat_debit", label: "Chat Debit" },
-              { value: "referral_bonus", label: "Referral Bonus" },
-            ],
-          },
-          {
-            key: "status",
-            label: "Status",
-            value: status,
-            options: [
-              { value: "all", label: "All" },
-              { value: "pending", label: "Pending" },
-              { value: "success", label: "Success" },
-              { value: "failed", label: "Failed" },
-              { value: "refunded", label: "Refunded" },
-            ],
-          },
-        ]}
-        actionSlot={
-          <Button variant="secondary" onClick={() => setAdjustOpen((prev) => !prev)}>
-            Manual Adjustment
-          </Button>
-        }
-      />
-
-      {adjustOpen ? (
-        <div className="glass-card grid gap-3 rounded-2xl border border-app-border p-4 md:grid-cols-5">
-          <Input
-            placeholder="User ID"
-            value={adjustPayload.userId}
-            onChange={(event) =>
-              setAdjustPayload((prev) => ({ ...prev, userId: event.target.value }))
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            label="Recharge Volume"
+            value={
+              overviewQuery.isLoading
+                ? "Loading..."
+                : overview
+                  ? formatInr(overview.totalRechargeVolume)
+                  : "--"
             }
           />
-          <select
-            value={adjustPayload.type}
-            onChange={(event) =>
-              setAdjustPayload((prev) => ({
-                ...prev,
-                type: event.target.value as "credit" | "debit",
-              }))
-            }
-            className="h-11 rounded-xl border border-app-border bg-[#140f26] px-3 text-sm text-app-text-secondary"
-          >
-            <option value="credit">Credit</option>
-            <option value="debit">Debit</option>
-          </select>
-          <Input
-            placeholder="Amount"
-            value={adjustPayload.amount}
-            onChange={(event) =>
-              setAdjustPayload((prev) => ({ ...prev, amount: event.target.value }))
+          <StatCard
+            label="Pending Payments"
+            value={
+              overviewQuery.isLoading
+                ? "Loading..."
+                : overview
+                  ? String(overview.pendingPayments)
+                  : "--"
             }
           />
-          <Input
-            placeholder="Reason"
-            value={adjustPayload.reason}
-            onChange={(event) =>
-              setAdjustPayload((prev) => ({ ...prev, reason: event.target.value }))
+          <StatCard
+            label="Failed Payments"
+            value={
+              overviewQuery.isLoading
+                ? "Loading..."
+                : overview
+                  ? String(overview.failedPayments)
+                  : "--"
             }
           />
-          <Button
-            onClick={() =>
-              manualAdjustment.mutate({
-                userId: adjustPayload.userId,
-                type: adjustPayload.type,
-                amount: Number(adjustPayload.amount),
-                reason: adjustPayload.reason || "Admin adjustment",
-              })
+          <StatCard
+            label="Refunds"
+            value={
+              overviewQuery.isLoading
+                ? "Loading..."
+                : overview
+                  ? String(overview.refunds)
+                  : "--"
             }
-          >
-            Submit
-          </Button>
+            subValue={`Coupon Usage: ${overview?.couponUsage ?? "--"}`}
+          />
         </div>
-      ) : null}
 
-      <DataTable
-        data={transactionsQuery.data?.items ?? []}
-        columns={columns}
-        loading={transactionsQuery.isLoading}
-        page={transactionsQuery.data?.page}
-        totalPages={transactionsQuery.data?.totalPages}
-        onPageChange={setPage}
-      />
+        {overviewQuery.isError ? (
+          <div className="rounded-2xl border border-app-danger/40 bg-app-danger/10 p-4">
+            <p className="font-semibold text-app-danger">Failed to load wallet overview</p>
+            <p className="mt-1 text-sm text-app-text-secondary">
+              {getErrorMessage(overviewQuery.error)}
+            </p>
+            <div className="mt-3">
+              <Button size="sm" variant="secondary" onClick={() => void overviewQuery.refetch()}>
+                Retry Overview
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        <SearchFilterBar
+          searchValue={search}
+          onSearchChange={setSearch}
+          onFilterChange={(key, value) => {
+            if (key === "type") setType(value);
+            if (key === "status") setStatus(value);
+          }}
+          filters={[
+            {
+              key: "type",
+              label: "Type",
+              value: type,
+              options: [
+                { value: "all", label: "All" },
+                { value: "recharge", label: "Recharge" },
+                { value: "call_debit", label: "Call Debit" },
+                { value: "chat_debit", label: "Chat Debit" },
+                { value: "referral_bonus", label: "Referral Bonus" },
+              ],
+            },
+            {
+              key: "status",
+              label: "Status",
+              value: status,
+              options: [
+                { value: "all", label: "All" },
+                { value: "pending", label: "Pending" },
+                { value: "success", label: "Success" },
+                { value: "failed", label: "Failed" },
+                { value: "refunded", label: "Refunded" },
+              ],
+            },
+          ]}
+          actionSlot={
+            <Button variant="secondary" onClick={() => setAdjustOpen((prev) => !prev)}>
+              Manual Adjustment
+            </Button>
+          }
+        />
+
+        {adjustOpen ? (
+          <div className="glass-card grid gap-3 rounded-2xl border border-app-border p-4 md:grid-cols-5">
+            <Input
+              placeholder="User ID"
+              value={adjustPayload.userId}
+              onChange={(event) =>
+                setAdjustPayload((prev) => ({ ...prev, userId: event.target.value }))
+              }
+            />
+            <select
+              value={adjustPayload.type}
+              onChange={(event) =>
+                setAdjustPayload((prev) => ({
+                  ...prev,
+                  type: event.target.value as "credit" | "debit",
+                }))
+              }
+              className="h-11 rounded-xl border border-app-border bg-[#140f26] px-3 text-sm text-app-text-secondary"
+            >
+              <option value="credit">Credit</option>
+              <option value="debit">Debit</option>
+            </select>
+            <Input
+              placeholder="Amount"
+              value={adjustPayload.amount}
+              onChange={(event) =>
+                setAdjustPayload((prev) => ({ ...prev, amount: event.target.value }))
+              }
+            />
+            <Input
+              placeholder="Reason"
+              value={adjustPayload.reason}
+              onChange={(event) =>
+                setAdjustPayload((prev) => ({ ...prev, reason: event.target.value }))
+              }
+            />
+            <Button
+              onClick={() =>
+                manualAdjustment.mutate({
+                  userId: adjustPayload.userId,
+                  type: adjustPayload.type,
+                  amount: Number(adjustPayload.amount),
+                  reason: adjustPayload.reason || "Admin adjustment",
+                })
+              }
+            >
+              Submit
+            </Button>
+          </div>
+        ) : null}
+
+        <DataTable
+          data={transactionsQuery.data?.items ?? []}
+          columns={columns}
+          loading={transactionsQuery.isLoading}
+          page={transactionsQuery.data?.page}
+          totalPages={transactionsQuery.data?.totalPages}
+          onPageChange={setPage}
+        />
+
+        {transactionsQuery.isError ? (
+          <div className="rounded-2xl border border-app-danger/40 bg-app-danger/10 p-4">
+            <p className="font-semibold text-app-danger">Failed to load wallet transactions</p>
+            <p className="mt-1 text-sm text-app-text-secondary">
+              {getErrorMessage(transactionsQuery.error)}
+            </p>
+            <div className="mt-3">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void transactionsQuery.refetch()}
+              >
+                Retry Transactions
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </RoleGate>
     </AdminLayout>
   );
